@@ -1,7 +1,8 @@
-import sqlite3
 import logging
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Body, HTTPException
+from app.db.connection import get_connection
 from app.telemetry.models import TelemetryEvent
+from app.telemetry.materializer import materialize_pd_execution
 from app.telemetry.validator import validate_event_payload
 from app.config.settings import get_settings
 
@@ -10,16 +11,12 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
-def get_db():
-    return sqlite3.connect(settings.telemetry_db_path)
-
-
 @router.post("/events")
-async def ingest_event(payload: dict = Body(...)):
+async def ingest_event(payload: dict = Body(...), background_tasks: BackgroundTasks):
     try:
         event: TelemetryEvent = validate_event_payload(payload)
 
-        conn = get_db()
+        conn = get_connection()
         cursor = conn.cursor()
 
         cursor.execute(
@@ -53,6 +50,8 @@ async def ingest_event(payload: dict = Body(...)):
         conn.commit()
         conn.close()
 
+        background_tasks.add_task(materialize_pd_execution, event)
+
         logger.info("Telemetry event persisted", extra={"eventId": event.eventId})
         return {"status": "ok"}
 
@@ -64,7 +63,7 @@ async def ingest_event(payload: dict = Body(...)):
 @router.get("/events")
 async def list_events():
     try:
-        conn = get_db()
+        conn = get_connection()
         cursor = conn.execute(
             """
             SELECT
