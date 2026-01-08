@@ -1,38 +1,112 @@
+import sqlite3
 import logging
-from fastapi import APIRouter, Body, HTTPException, Response
-from fastapi.responses import JSONResponse
-
+from fastapi import APIRouter, Body, HTTPException
 from app.telemetry.models import TelemetryEvent
-from app.telemetry.store import get_store
 from app.telemetry.validator import validate_event_payload
+from app.config.settings import get_settings
 
 router = APIRouter(prefix="/telemetry", tags=["telemetry"])
 logger = logging.getLogger(__name__)
-store = get_store()
+settings = get_settings()
+
+
+def get_db():
+    return sqlite3.connect(settings.telemetry_db_path)
 
 
 @router.post("/events")
-async def ingest_event(payload: dict = Body(...)) -> Response:
+async def ingest_event(payload: dict = Body(...)):
     try:
         event: TelemetryEvent = validate_event_payload(payload)
-        logger.info(
-            "Telemetry event received",
-            extra={
-                "eventId": event.eventId,
-                "source": event.source.model_dump() if event.source else None,
-                "status": event.outcome.status if event.outcome else None,
-                "protocol": event.protocol.model_dump() if event.protocol else None,
-            },
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO telemetry_events (
+                event_id,
+                event_type,
+                timestamp_utc,
+                source_channel_id,
+                source_environment,
+                status,
+                duration_ms,
+                correlation_request_id,
+                raw_payload
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.eventId,
+                event.eventType,
+                event.timestamp,
+                event.source.channelId if event.source else None,
+                event.source.environment if event.source else None,
+                event.outcome.status if event.outcome else None,
+                event.outcome.durationMs if event.outcome else None,
+                event.correlation.requestId if event.correlation else None,
+                payload,
+            ),
         )
-        store.add(event)
-        return JSONResponse(status_code=200, content={"status": "ok"})
-    except HTTPException:
-        raise
+
+        conn.commit()
+        conn.close()
+
+        logger.info("Telemetry event persisted", extra={"eventId": event.eventId})
+        return {"status": "ok"}
+
     except Exception:
-        logger.exception("Unexpected error while ingesting telemetry event")
+        logger.exception("Failed to ingest telemetry event")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/events")
 async def list_events():
-    return store.get_all()
+    try:
+        conn = get_db()
+        cursor = conn.execute(
+            """
+            SELECT
+                event_id,
+                event_type,
+                timestamp_utc,
+                source_channel_id,
+                source_environment,
+                status,
+                duration_ms,
+                correlation_request_id,
+                raw_payload
+            FROM telemetry_events
+            ORDER BY timestamp_utc DESC
+            LIMIT 500
+            """
+        )
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [
+            {
+                "eventId": r[0],
+                "eventType": r[1],
+                "timestamp": r[2],
+                "source": {
+                    "channelId": r[3],
+                    "environment": r[4],
+                },
+                "outcome": {
+                    "status": r[5],
+                    "durationMs": r[6],
+                },
+                "correlation": {
+                    "requestId": r[7],
+                },
+                "raw": r[8],
+            }
+            for r in rows
+        ]
+
+    except Exception:
+        logger.exception("Failed to load telemetry events")
+        raise HTTPException(status_code=500, detail="Internal server error")

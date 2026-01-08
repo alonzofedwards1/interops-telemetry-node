@@ -13,11 +13,12 @@ if str(ROOT_PATH) not in sys.path:
 from app.api.telemetry import router as telemetry_router
 from app.config.settings import get_settings
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logging.basicConfig(level=logging.INFO)
 
 settings = get_settings()
 
 app = FastAPI(title="InterOps Telemetry API")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
@@ -25,12 +26,17 @@ app.add_middleware(
     allow_headers=["*"],
     allow_credentials=False,
 )
+
 app.include_router(telemetry_router, prefix="/api")
 
 
 @app.get("/health")
-async def health() -> dict:
-    return {"status": "ok"}
+async def health():
+    return {
+        "status": "ok",
+        "db_path": settings.telemetry_db_path,
+        "port": settings.port,
+    }
 
 
 if __name__ == "__main__":
@@ -38,6 +44,5 @@ if __name__ == "__main__":
         "app.main:app",
         host="0.0.0.0",
         port=settings.port,
-        reload=False,
-        log_level="info",
+        reload=True,
     )
