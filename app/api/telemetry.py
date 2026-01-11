@@ -52,7 +52,7 @@ async def ingest_event(payload: dict = Body(...)):
                 event.outcome.status if event.outcome else None,
                 event.outcome.durationMs if event.outcome else None,
                 event.correlation.requestId if event.correlation else None,
-                json.dumps(payload),
+                json.dumps(payload),  # always store JSON text
             ),
         )
 
@@ -67,6 +67,7 @@ async def ingest_event(payload: dict = Body(...)):
             },
         )
 
+        # Materialize PD execution (best-effort, non-blocking)
         materialize_pd_execution(event)
 
         return {"status": "ok"}
@@ -88,7 +89,6 @@ async def ingest_event(payload: dict = Body(...)):
 async def list_events():
     try:
         conn = get_connection()
-        conn.row_factory = None
 
         rows = conn.execute(
             """
@@ -111,9 +111,21 @@ async def list_events():
         conn.close()
 
         events = []
+
         for row in rows:
             raw_payload = row[8]
-            parsed_raw = json.loads(raw_payload) if raw_payload else None
+            parsed_raw = None
+
+            if raw_payload:
+                try:
+                    parsed_raw = json.loads(raw_payload)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "Invalid JSON raw_payload for telemetry event",
+                        extra={"eventId": row[0]},
+                    )
+                    parsed_raw = raw_payload  # fallback to raw string
+
             events.append(
                 {
                     "eventId": row[0],
