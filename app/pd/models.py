@@ -7,7 +7,6 @@ class PDExecution(BaseModel):
     completedAt: str = Field(..., description="Execution completion timestamp (ISO 8601)")
     durationMs: int = Field(..., ge=0, description="Execution duration in milliseconds")
     outcome: str = Field(..., description="Execution outcome")
-    success: bool = Field(..., description="Execution success flag")
 
     model_config = ConfigDict(
         populate_by_name=True,

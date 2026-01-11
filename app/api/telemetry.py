@@ -1,21 +1,22 @@
 import logging
-from fastapi import APIRouter, BackgroundTasks, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException
+
 from app.db.connection import get_connection
 from app.telemetry.models import TelemetryEvent
-from app.telemetry.materializer import materialize_pd_execution
 from app.telemetry.validator import validate_event_payload
-from app.config.settings import get_settings
+from app.telemetry.materializer import materialize_pd_execution
 
 router = APIRouter(prefix="/telemetry", tags=["telemetry"])
 logger = logging.getLogger(__name__)
-settings = get_settings()
 
 
 @router.post("/events")
-async def ingest_event(payload: dict = Body(...), background_tasks: BackgroundTasks):
+async def ingest_event(payload: dict = Body(...)):
     try:
+        # ✅ Validate payload → TelemetryEvent
         event: TelemetryEvent = validate_event_payload(payload)
 
+        # ✅ Persist raw telemetry event
         conn = get_connection()
         cursor = conn.cursor()
 
@@ -50,21 +51,27 @@ async def ingest_event(payload: dict = Body(...), background_tasks: BackgroundTa
         conn.commit()
         conn.close()
 
-        background_tasks.add_task(materialize_pd_execution, event)
+        # 🔥 INLINE materialization (NO BackgroundTasks)
+        materialize_pd_execution(event)
 
-        logger.info("Telemetry event persisted", extra={"eventId": event.eventId})
+        logger.info(
+            "Telemetry event ingested and materialized",
+            extra={"eventId": event.eventId},
+        )
+
         return {"status": "ok"}
 
     except Exception:
         logger.exception("Failed to ingest telemetry event")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-
 @router.get("/events")
 async def list_events():
     try:
         conn = get_connection()
-        cursor = conn.execute(
+        conn.row_factory = None
+
+        rows = conn.execute(
             """
             SELECT
                 event_id,
@@ -80,9 +87,8 @@ async def list_events():
             ORDER BY timestamp_utc DESC
             LIMIT 500
             """
-        )
+        ).fetchall()
 
-        rows = cursor.fetchall()
         conn.close()
 
         return [
@@ -107,5 +113,5 @@ async def list_events():
         ]
 
     except Exception:
-        logger.exception("Failed to load telemetry events")
+        logger.exception("Failed to list telemetry events")
         raise HTTPException(status_code=500, detail="Internal server error")

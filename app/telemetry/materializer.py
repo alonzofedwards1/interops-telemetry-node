@@ -6,39 +6,63 @@ from app.telemetry.models import TelemetryEvent
 
 logger = logging.getLogger(__name__)
 
-PD_EVENT_TYPE = "pd.request.completed"
+PD_EVENT_TYPE = "pd.request.complete"
 
 
 def materialize_pd_execution(event: TelemetryEvent) -> None:
-    if event.eventType != PD_EVENT_TYPE:
-        return
-
-    if not event.correlation or not event.correlation.requestId:
-        logger.warning("PD event missing requestId", extra={"eventId": event.eventId})
-        return
-
-    duration_ms = 0
-    if event.execution and event.execution.durationMs is not None:
-        duration_ms = event.execution.durationMs
-
-    completed_at = event.timestamp
-    started_at = completed_at - timedelta(milliseconds=duration_ms)
-
-    outcome_status = None
-    if event.outcome and event.outcome.status:
-        outcome_status = event.outcome.status
-
-    success = outcome_status == "SUCCESS"
-    outcome = "success" if success else "failure"
-
     try:
+        logger.info("Materializer invoked", extra={"eventId": event.eventId})
+
+        if event.eventType != PD_EVENT_TYPE:
+            return
+
+        if not event.correlation or not event.correlation.requestId:
+            logger.warning(
+                "PD event missing requestId",
+                extra={"eventId": event.eventId},
+            )
+            return
+
+        duration_ms = (
+            event.outcome.durationMs
+            if event.outcome and event.outcome.durationMs is not None
+            else 0
+        )
+
+        completed_at = event.timestamp
+        started_at = completed_at - timedelta(milliseconds=duration_ms)
+
+        outcome_status = (
+            event.outcome.status.lower()
+            if event.outcome and event.outcome.status
+            else "unknown"
+        )
+
+        outcome = "success" if outcome_status == "success" else "failure"
+
+        logger.info(
+            "Materializing PD execution",
+            extra={
+                "requestId": event.correlation.requestId,
+                "eventId": event.eventId,
+                "outcome": outcome,
+            },
+        )
+
         upsert_execution(
             request_id=event.correlation.requestId,
+            event_id=event.eventId,
             started_at=started_at.isoformat(),
             completed_at=completed_at.isoformat(),
             duration_ms=duration_ms,
             outcome=outcome,
-            success=success,
+            source_channel_id=event.source.channelId if event.source else None,
+            source_environment=event.source.environment if event.source else None,
         )
+
     except Exception:
-        logger.exception("Failed to materialize PD execution", extra={"eventId": event.eventId})
+        logger.exception(
+            "Failed to materialize PD execution",
+            extra={"eventId": event.eventId},
+        )
+        raise

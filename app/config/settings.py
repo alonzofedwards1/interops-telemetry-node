@@ -7,7 +7,9 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parents[2]
 
 DEFAULT_PORT = 8081
-DEFAULT_DB_PATH = str(BASE_DIR / "telemetry.db")
+
+# ✅ NEW: app/db/telemetry.db
+DEFAULT_DB_PATH = str(BASE_DIR / "app" / "db" / "telemetry.db")
 
 
 @dataclass(frozen=True)
@@ -22,7 +24,7 @@ class Settings:
     )
 
     # CORS
-    allowed_origins: List[str] = None
+    allowed_origins: List[str] | None = None
 
 
 def get_settings() -> Settings:
