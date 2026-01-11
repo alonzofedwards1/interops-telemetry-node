@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 from app.db.connection import get_connection
 
@@ -40,6 +41,12 @@ def run_migrations() -> None:
         conn = get_connection()
         conn.execute(TELEMETRY_EVENTS_SCHEMA)
         conn.execute(PD_EXECUTIONS_SCHEMA)
+
+        findings_schema_path = Path(__file__).resolve().parent / "schema_findings.sql"
+        if findings_schema_path.exists():
+            logger.info("Applying findings schema from %s", findings_schema_path)
+            conn.executescript(findings_schema_path.read_text(encoding="utf-8"))
+
         conn.commit()
         conn.close()
     except Exception:
