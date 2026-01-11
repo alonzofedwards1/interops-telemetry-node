@@ -11,6 +11,8 @@ DEFAULT_PORT = 8081
 # ✅ NEW: app/db/telemetry.db
 DEFAULT_DB_PATH = str(BASE_DIR / "app" / "db" / "telemetry.db")
 
+DEFAULT_ENVIRONMENT = "dev"
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -22,6 +24,9 @@ class Settings:
         "TELEMETRY_DB_PATH",
         DEFAULT_DB_PATH,
     )
+
+    # Environment
+    environment: str = os.environ.get("ENVIRONMENT", DEFAULT_ENVIRONMENT)
 
     # CORS
     allowed_origins: List[str] | None = None
