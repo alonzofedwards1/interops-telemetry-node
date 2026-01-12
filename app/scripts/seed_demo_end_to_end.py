@@ -8,16 +8,28 @@ from datetime import datetime, timedelta, timezone
 
 DB_PATH = r"C:\Users\alonz\Documents\interops-telemetry-api\app\db\telemetry.db"
 
-TOTAL_TRANSACTIONS = 250   # increase to 500 / 1000 if desired
+TOTAL_TRANSACTIONS = 250
 CHANNEL = "pd-gateway"
 ENVIRONMENT = "Production"
 
-AUTH_FAILURE_RATE = 0.25     # 25% have auth issues
-LATENCY_WARNING_RATE = 0.30  # 30% slow responses
-FAILURE_RATE = 0.10          # 10% outright failures
+AUTH_FAILURE_RATE = 0.25
+LATENCY_WARNING_RATE = 0.30
+FAILURE_RATE = 0.10
 
 # ============================================================
-# Helpers
+# RAW HCID / OID POOL (SIMULATED REAL-WORLD PARTICIPANTS)
+# ============================================================
+
+HCIDS = [
+    ("2.16.840.1.113883.3.247", "Epic Systems Corporation"),
+    ("2.16.840.1.113883.3.600.1.1570", "CRISP HIE"),
+    ("2.16.840.1.113883.3.962", "eHealth Exchange"),
+    ("2.16.840.1.113883.3.18.7", "CommonWell Health Alliance"),
+    ("2.16.840.1.113883.3.13.6.7", "Carequality"),
+]
+
+# ============================================================
+# HELPERS
 # ============================================================
 
 def now(offset_seconds: int = 0) -> str:
@@ -32,7 +44,7 @@ def event_id(i: int, j: int) -> str:
     return f"evt-{i:04d}-{j}"
 
 # ============================================================
-# Connect
+# CONNECT
 # ============================================================
 
 conn = sqlite3.connect(DB_PATH)
@@ -40,21 +52,51 @@ conn.row_factory = sqlite3.Row
 cur = conn.cursor()
 
 # ============================================================
-# RESET DATABASE (CRITICAL FOR DEMOS)
+# RESET DATABASE (DEMO SAFE)
 # ============================================================
 
-print("🧹 RESETTING DATABASE FOR LOAD TEST...")
+print("🧹 RESETTING DATABASE...")
 
 cur.execute("DELETE FROM findings;")
 cur.execute("DELETE FROM pd_executions;")
 cur.execute("DELETE FROM telemetry_events;")
+cur.execute("DELETE FROM organization_oids;")
+cur.execute("DELETE FROM organizations;")
+cur.execute("DELETE FROM oid_directory;")
+
 conn.commit()
+
+# ============================================================
+# OID REGISTRATION (AUTOMATED, NON-BLOCKING)
+# ============================================================
+
+def register_observed_oid(oid: str, org_name: str | None):
+    ts = now()
+
+    cur.execute(
+        """
+        INSERT INTO oid_directory (
+            oid,
+            organization_name,
+            status,
+            first_seen_at,
+            last_seen_at,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, 'provisional', ?, ?, ?, ?)
+        ON CONFLICT(oid) DO UPDATE SET
+            last_seen_at = excluded.last_seen_at,
+            updated_at = excluded.updated_at
+        """,
+        (oid, org_name, ts, ts, ts, ts)
+    )
 
 # ============================================================
 # LOAD GENERATION
 # ============================================================
 
-print(f"🚀 Generating {TOTAL_TRANSACTIONS} PD transactions...")
+print(f"🚀 Generating {TOTAL_TRANSACTIONS} PD transactions with identity...")
 
 for i in range(1, TOTAL_TRANSACTIONS + 1):
 
@@ -74,7 +116,20 @@ for i in range(1, TOTAL_TRANSACTIONS + 1):
     outcome = "failure" if is_failure else "success"
 
     # --------------------------------------------------------
-    # TELEMETRY EVENTS (EVIDENCE)
+    # PICK REALISTIC SENDER / RECEIVER HCIDS
+    # --------------------------------------------------------
+
+    (source_oid, source_name) = random.choice(HCIDS)
+    (target_oid, target_name) = random.choice(
+        [h for h in HCIDS if h[0] != source_oid]
+    )
+
+    # Auto-register identity evidence
+    register_observed_oid(source_oid, source_name)
+    register_observed_oid(target_oid, target_name)
+
+    # --------------------------------------------------------
+    # TELEMETRY EVENTS (RAW EVIDENCE)
     # --------------------------------------------------------
 
     events = []
@@ -145,7 +200,7 @@ for i in range(1, TOTAL_TRANSACTIONS + 1):
         )
 
     # --------------------------------------------------------
-    # PD EXECUTION (TRANSACTION)
+    # PD EXECUTION (IDENTITY-AWARE)
     # --------------------------------------------------------
 
     cur.execute(
@@ -159,9 +214,11 @@ for i in range(1, TOTAL_TRANSACTIONS + 1):
             source_channel_id,
             source_environment,
             first_event_id,
-            last_event_id
+            last_event_id,
+            source_oid,
+            target_oid
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             request_id,
@@ -173,11 +230,13 @@ for i in range(1, TOTAL_TRANSACTIONS + 1):
             ENVIRONMENT,
             events[0]["event_id"],
             events[-1]["event_id"],
+            source_oid,
+            target_oid,
         ),
     )
 
     # --------------------------------------------------------
-    # FINDINGS (INTERPRETED CONCLUSIONS)
+    # FINDINGS (DERIVED CONCLUSIONS)
     # --------------------------------------------------------
 
     if has_auth_issue:
@@ -250,23 +309,20 @@ for i in range(1, TOTAL_TRANSACTIONS + 1):
             ),
         )
 
-    # --------------------------------------------------------
-    # Batch commit (SQLite-friendly)
-    # --------------------------------------------------------
-
     if i % 50 == 0:
         conn.commit()
         print(f"✔ Seeded {i} transactions")
 
 # ============================================================
-# Done
+# DONE
 # ============================================================
 
 conn.commit()
 conn.close()
 
 print("\n🎉 LOAD TEST DATA GENERATED SUCCESSFULLY")
-print("You can now demo:")
-print("• Hundreds of PD transactions")
-print("• Mixed outcomes and findings")
-print("• Realistic dashboards under load")
+print("You now have:")
+print("• Identity-aware PD executions")
+print("• Provisional OIDs in the directory")
+print("• Realistic telemetry and findings")
+print("• A demo that mirrors real PD traffic")
