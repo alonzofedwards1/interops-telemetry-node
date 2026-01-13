@@ -112,7 +112,6 @@ async def ingest_event(payload: dict = Body(...)):
 async def list_events():
     try:
         conn = get_connection()
-        conn.row_factory = None
 
         rows = conn.execute(
             """
