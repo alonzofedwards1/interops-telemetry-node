@@ -128,7 +128,12 @@ async def list_events():
         events = []
         for row in rows:
             raw_payload = row[8]
-            parsed_raw = json.loads(raw_payload) if raw_payload else None
+            parsed_raw = None
+            if raw_payload:
+                try:
+                    parsed_raw = json.loads(raw_payload)
+                except (json.JSONDecodeError, TypeError):
+                    parsed_raw = raw_payload
             events.append(
                 {
                     "eventId": row[0],
