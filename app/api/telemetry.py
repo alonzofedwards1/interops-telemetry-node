@@ -1,7 +1,9 @@
+import json
 import logging
 from fastapi import APIRouter, Body, HTTPException
 
 from app.db.connection import get_connection
+from app.oids.repository import register_observed_oid
 from app.telemetry.models import TelemetryEvent
 from app.telemetry.validator import validate_event_payload
 from app.telemetry.materializer import materialize_pd_execution
@@ -10,13 +12,36 @@ router = APIRouter(prefix="/telemetry", tags=["telemetry"])
 logger = logging.getLogger(__name__)
 
 
+def _extract_oid(payload: dict, key: str) -> str | None:
+    return payload.get(key) or payload.get(key.replace("_oid", "Oid"))
+
+
+def _register_oid_safe(oid: str | None) -> None:
+    if not oid:
+        return
+    try:
+        register_observed_oid(oid, None)
+    except Exception:
+        logger.exception("Failed to register observed OID", extra={"oid": oid})
+
+
 @router.post("/events")
 async def ingest_event(payload: dict = Body(...)):
+    event: TelemetryEvent | None = None
     try:
-        # ✅ Validate payload → TelemetryEvent
-        event: TelemetryEvent = validate_event_payload(payload)
+        event = validate_event_payload(payload)
 
-        # ✅ Persist raw telemetry event
+        logger.info(
+            "INGEST_RECEIVED",
+            extra={
+                "eventId": event.eventId,
+                "requestId": event.correlation.requestId if event.correlation else None,
+            },
+        )
+
+        source_oid = _extract_oid(payload, "source_oid")
+        target_oid = _extract_oid(payload, "target_oid")
+
         conn = get_connection()
         cursor = conn.cursor()
 
@@ -31,39 +56,57 @@ async def ingest_event(payload: dict = Body(...)):
                 status,
                 duration_ms,
                 correlation_request_id,
+                source_oid,
+                target_oid,
                 raw_payload
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                event.eventId,
-                event.eventType,
-                event.timestamp,
+                payload.get("eventId"),
+                payload.get("eventType"),
+                payload.get("timestamp"),
                 event.source.channelId if event.source else None,
                 event.source.environment if event.source else None,
                 event.outcome.status if event.outcome else None,
                 event.outcome.durationMs if event.outcome else None,
                 event.correlation.requestId if event.correlation else None,
-                payload,
+                source_oid,
+                target_oid,
+                json.dumps(payload),
             ),
         )
 
         conn.commit()
         conn.close()
 
-        # 🔥 INLINE materialization (NO BackgroundTasks)
-        materialize_pd_execution(event)
-
         logger.info(
-            "Telemetry event ingested and materialized",
-            extra={"eventId": event.eventId},
+            "INGEST_PERSISTED",
+            extra={
+                "eventId": event.eventId,
+                "requestId": event.correlation.requestId if event.correlation else None,
+            },
         )
+
+        _register_oid_safe(source_oid)
+        _register_oid_safe(target_oid)
+
+        materialize_pd_execution(event)
 
         return {"status": "ok"}
 
+    except HTTPException:
+        raise
     except Exception:
-        logger.exception("Failed to ingest telemetry event")
+        logger.exception(
+            "Failed to ingest telemetry event",
+            extra={
+                "eventId": event.eventId if event else None,
+                "requestId": event.correlation.requestId if event and event.correlation else None,
+            },
+        )
         raise HTTPException(status_code=500, detail="Internal server error")
+
 
 @router.get("/events")
 async def list_events():
@@ -91,26 +134,31 @@ async def list_events():
 
         conn.close()
 
-        return [
-            {
-                "eventId": r[0],
-                "eventType": r[1],
-                "timestamp": r[2],
-                "source": {
-                    "channelId": r[3],
-                    "environment": r[4],
-                },
-                "outcome": {
-                    "status": r[5],
-                    "durationMs": r[6],
-                },
-                "correlation": {
-                    "requestId": r[7],
-                },
-                "raw": r[8],
-            }
-            for r in rows
-        ]
+        events = []
+        for row in rows:
+            raw_payload = row[8]
+            parsed_raw = json.loads(raw_payload) if raw_payload else None
+            events.append(
+                {
+                    "eventId": row[0],
+                    "eventType": row[1],
+                    "timestamp": row[2],
+                    "source": {
+                        "channelId": row[3],
+                        "environment": row[4],
+                    },
+                    "outcome": {
+                        "status": row[5],
+                        "durationMs": row[6],
+                    },
+                    "correlation": {
+                        "requestId": row[7],
+                    },
+                    "raw": parsed_raw,
+                }
+            )
+
+        return events
 
     except Exception:
         logger.exception("Failed to list telemetry events")

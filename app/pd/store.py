@@ -17,8 +17,15 @@ def upsert_execution(
     outcome: str | None = None,
     source_channel_id: str | None = None,
     source_environment: str | None = None,
+    source_oid: str | None = None,
+    target_oid: str | None = None,
 ) -> None:
     try:
+        logger.info(
+            "UPSERT_CALLED",
+            extra={"requestId": request_id, "eventId": event_id},
+        )
+
         conn = get_connection()
 
         conn.execute(
@@ -31,17 +38,26 @@ def upsert_execution(
                 outcome,
                 source_channel_id,
                 source_environment,
+                source_oid,
+                target_oid,
                 first_event_id,
                 last_event_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(request_id) DO UPDATE SET
-                started_at = COALESCE(pd_executions.started_at, excluded.started_at),
+                started_at = CASE
+                    WHEN pd_executions.started_at IS NULL THEN excluded.started_at
+                    WHEN excluded.started_at IS NULL THEN pd_executions.started_at
+                    WHEN excluded.started_at < pd_executions.started_at THEN excluded.started_at
+                    ELSE pd_executions.started_at
+                END,
                 completed_at = COALESCE(excluded.completed_at, pd_executions.completed_at),
                 duration_ms = COALESCE(excluded.duration_ms, pd_executions.duration_ms),
                 outcome = COALESCE(excluded.outcome, pd_executions.outcome),
                 source_channel_id = COALESCE(excluded.source_channel_id, pd_executions.source_channel_id),
                 source_environment = COALESCE(excluded.source_environment, pd_executions.source_environment),
+                source_oid = COALESCE(excluded.source_oid, pd_executions.source_oid),
+                target_oid = COALESCE(excluded.target_oid, pd_executions.target_oid),
                 last_event_id = excluded.last_event_id
             """,
             (
@@ -52,18 +68,38 @@ def upsert_execution(
                 outcome,
                 source_channel_id,
                 source_environment,
+                source_oid,
+                target_oid,
                 event_id,
                 event_id,
             ),
         )
 
         conn.commit()
+
+        logger.info(
+            "UPSERT_COMMITTED",
+            extra={"requestId": request_id, "eventId": event_id},
+        )
+
+        row = conn.execute(
+            "SELECT COUNT(*) AS row_count FROM pd_executions WHERE request_id = ?",
+            (request_id,),
+        ).fetchone()
+        row_count = int(row[0]) if row else 0
+
+        logger.info(
+            "UPSERT_ROW_CHECK",
+            extra={"requestId": request_id, "eventId": event_id, "count": row_count},
+        )
+
         conn.close()
 
-        logger.info("PD execution upserted", extra={"requestId": request_id})
-
     except Exception:
-        logger.exception("Failed to upsert PD execution")
+        logger.exception(
+            "Failed to upsert PD execution",
+            extra={"requestId": request_id, "eventId": event_id},
+        )
         raise
 
 
