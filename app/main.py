@@ -11,6 +11,7 @@ if str(ROOT_PATH) not in sys.path:
     sys.path.insert(0, str(ROOT_PATH))
 
 from app.api.findings import router as findings_router
+from app.api.oids import router as oids_router
 from app.api.pd_executions import router as pd_executions_router
 from app.api.telemetry import router as telemetry_router
 from app.config.settings import get_settings
@@ -33,6 +34,7 @@ app.add_middleware(
 app.include_router(telemetry_router, prefix="/api")
 app.include_router(pd_executions_router, prefix="/api")
 app.include_router(findings_router, prefix="/api")
+app.include_router(oids_router, prefix="/api")
 
 
 @app.on_event("startup")

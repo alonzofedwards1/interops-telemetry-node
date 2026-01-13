@@ -3,12 +3,26 @@ import logging
 from fastapi import APIRouter, Body, HTTPException
 
 from app.db.connection import get_connection
+from app.oids.repository import register_observed_oid
 from app.telemetry.models import TelemetryEvent
 from app.telemetry.validator import validate_event_payload
 from app.telemetry.materializer import materialize_pd_execution
 
 router = APIRouter(prefix="/telemetry", tags=["telemetry"])
 logger = logging.getLogger(__name__)
+
+
+def _extract_oid(payload: dict, key: str) -> str | None:
+    return payload.get(key) or payload.get(key.replace("_oid", "Oid"))
+
+
+def _register_oid_safe(oid: str | None) -> None:
+    if not oid:
+        return
+    try:
+        register_observed_oid(oid, None)
+    except Exception:
+        logger.exception("Failed to register observed OID", extra={"oid": oid})
 
 
 @router.post("/events")
@@ -25,6 +39,9 @@ async def ingest_event(payload: dict = Body(...)):
             },
         )
 
+        source_oid = _extract_oid(payload, "source_oid")
+        target_oid = _extract_oid(payload, "target_oid")
+
         conn = get_connection()
         cursor = conn.cursor()
 
@@ -39,20 +56,24 @@ async def ingest_event(payload: dict = Body(...)):
                 status,
                 duration_ms,
                 correlation_request_id,
+                source_oid,
+                target_oid,
                 raw_payload
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                event.eventId,
-                event.eventType,
-                event.timestamp,
+                payload.get("eventId"),
+                payload.get("eventType"),
+                payload.get("timestamp"),
                 event.source.channelId if event.source else None,
                 event.source.environment if event.source else None,
                 event.outcome.status if event.outcome else None,
                 event.outcome.durationMs if event.outcome else None,
                 event.correlation.requestId if event.correlation else None,
-                json.dumps(payload),  # always store JSON text
+                source_oid,
+                target_oid,
+                json.dumps(payload),
             ),
         )
 
@@ -67,7 +88,9 @@ async def ingest_event(payload: dict = Body(...)):
             },
         )
 
-        # Materialize PD execution (best-effort, non-blocking)
+        _register_oid_safe(source_oid)
+        _register_oid_safe(target_oid)
+
         materialize_pd_execution(event)
 
         return {"status": "ok"}
@@ -111,21 +134,9 @@ async def list_events():
         conn.close()
 
         events = []
-
         for row in rows:
             raw_payload = row[8]
-            parsed_raw = None
-
-            if raw_payload:
-                try:
-                    parsed_raw = json.loads(raw_payload)
-                except json.JSONDecodeError:
-                    logger.warning(
-                        "Invalid JSON raw_payload for telemetry event",
-                        extra={"eventId": row[0]},
-                    )
-                    parsed_raw = raw_payload  # fallback to raw string
-
+            parsed_raw = json.loads(raw_payload) if raw_payload else None
             events.append(
                 {
                     "eventId": row[0],
