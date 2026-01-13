@@ -3,12 +3,26 @@ import logging
 from fastapi import APIRouter, Body, HTTPException
 
 from app.db.connection import get_connection
+from app.oids.repository import register_observed_oid
 from app.telemetry.models import TelemetryEvent
 from app.telemetry.validator import validate_event_payload
 from app.telemetry.materializer import materialize_pd_execution
 
 router = APIRouter(prefix="/telemetry", tags=["telemetry"])
 logger = logging.getLogger(__name__)
+
+
+def _extract_oid(payload: dict, key: str) -> str | None:
+    return payload.get(key) or payload.get(key.replace("_oid", "Oid"))
+
+
+def _register_oid_safe(oid: str | None) -> None:
+    if not oid:
+        return
+    try:
+        register_observed_oid(oid, None)
+    except Exception:
+        logger.exception("Failed to register observed OID", extra={"oid": oid})
 
 
 @router.post("/events")
@@ -39,9 +53,11 @@ async def ingest_event(payload: dict = Body(...)):
                 status,
                 duration_ms,
                 correlation_request_id,
+                source_oid,
+                target_oid,
                 raw_payload
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload.get("eventId"),
@@ -88,7 +104,6 @@ async def ingest_event(payload: dict = Body(...)):
 async def list_events():
     try:
         conn = get_connection()
-        conn.row_factory = None
 
         rows = conn.execute(
             """

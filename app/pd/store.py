@@ -17,6 +17,8 @@ def upsert_execution(
     outcome: str | None = None,
     source_channel_id: str | None = None,
     source_environment: str | None = None,
+    source_oid: str | None = None,
+    target_oid: str | None = None,
 ) -> None:
     try:
         logger.info(
@@ -36,10 +38,12 @@ def upsert_execution(
                 outcome,
                 source_channel_id,
                 source_environment,
+                source_oid,
+                target_oid,
                 first_event_id,
                 last_event_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(request_id) DO UPDATE SET
                 started_at = CASE
                     WHEN pd_executions.started_at IS NULL THEN excluded.started_at
@@ -52,6 +56,8 @@ def upsert_execution(
                 outcome = COALESCE(excluded.outcome, pd_executions.outcome),
                 source_channel_id = COALESCE(excluded.source_channel_id, pd_executions.source_channel_id),
                 source_environment = COALESCE(excluded.source_environment, pd_executions.source_environment),
+                source_oid = COALESCE(excluded.source_oid, pd_executions.source_oid),
+                target_oid = COALESCE(excluded.target_oid, pd_executions.target_oid),
                 last_event_id = excluded.last_event_id
             """,
             (
@@ -62,6 +68,8 @@ def upsert_execution(
                 outcome,
                 source_channel_id,
                 source_environment,
+                source_oid,
+                target_oid,
                 event_id,
                 event_id,
             ),
