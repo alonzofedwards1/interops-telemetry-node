@@ -138,10 +138,20 @@ def get_oid(oid: str) -> dict[str, Any] | None:
         conn.close()
 
 
+def _pd_has_oid_columns(conn) -> bool:
+    columns = conn.execute("PRAGMA table_info(pd_executions)").fetchall()
+    if not columns:
+        return False
+    column_names = {row[1] for row in columns}
+    return "source_oid" in column_names and "target_oid" in column_names
+
+
 def get_oid_usage_counts(oid: str) -> dict[str, int]:
     logger.debug("get_oid_usage_counts", extra={"oid": oid})
     conn = get_connection()
     try:
+        if not _pd_has_oid_columns(conn):
+            return {"pd": 0, "qd": 0, "rd": 0, "xds": 0}
         row = conn.execute(
             """
             SELECT COUNT(*) AS count

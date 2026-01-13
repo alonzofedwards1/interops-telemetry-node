@@ -39,9 +39,6 @@ async def ingest_event(payload: dict = Body(...)):
             },
         )
 
-        source_oid = _extract_oid(payload, "source_oid")
-        target_oid = _extract_oid(payload, "target_oid")
-
         conn = get_connection()
         cursor = conn.cursor()
 
@@ -71,8 +68,6 @@ async def ingest_event(payload: dict = Body(...)):
                 event.outcome.status if event.outcome else None,
                 event.outcome.durationMs if event.outcome else None,
                 event.correlation.requestId if event.correlation else None,
-                source_oid,
-                target_oid,
                 json.dumps(payload),
             ),
         )
@@ -87,9 +82,6 @@ async def ingest_event(payload: dict = Body(...)):
                 "requestId": event.correlation.requestId if event.correlation else None,
             },
         )
-
-        _register_oid_safe(source_oid)
-        _register_oid_safe(target_oid)
 
         materialize_pd_execution(event)
 

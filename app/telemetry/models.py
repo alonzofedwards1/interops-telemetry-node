@@ -31,8 +31,6 @@ class TelemetryEvent(BaseModel):
     source: Optional[SourceInfo] = Field(None, description="Event source metadata")
     correlation: Optional[CorrelationInfo] = Field(None, description="Correlation identifiers")
     outcome: Optional[OutcomeInfo] = Field(None, description="Outcome summary")
-    sourceOid: Optional[str] = Field(None, description="Source OID observed")
-    targetOid: Optional[str] = Field(None, description="Target OID observed")
 
     model_config = ConfigDict(
         str_strip_whitespace=True,

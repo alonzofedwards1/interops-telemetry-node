@@ -54,10 +54,6 @@ def _normalize_outcome(outcome: Optional[Dict]) -> Optional[OutcomeInfo]:
     )
 
 
-def _extract_oid(payload: Dict, key: str) -> Optional[str]:
-    return payload.get(key) or payload.get(key.replace("_oid", "Oid"))
-
-
 def validate_event_payload(payload: Dict) -> TelemetryEvent:
     """Normalize raw telemetry payload into a TelemetryEvent model."""
 
@@ -73,8 +69,6 @@ def validate_event_payload(payload: Dict) -> TelemetryEvent:
             "source": _normalize_source(payload.get("source")),
             "correlation": _normalize_correlation(payload.get("correlation")),
             "outcome": _normalize_outcome(payload.get("outcome")),
-            "sourceOid": _extract_oid(payload, "source_oid"),
-            "targetOid": _extract_oid(payload, "target_oid"),
         }
         return TelemetryEvent(**normalized_payload)
     except HTTPException:

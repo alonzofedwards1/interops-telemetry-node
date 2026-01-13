@@ -17,15 +17,6 @@ def _parse_timestamp(value: str) -> datetime:
     return datetime.fromisoformat(normalized)
 
 
-def _register_oid_safe(oid: str | None) -> None:
-    if not oid:
-        return
-    try:
-        register_observed_oid(oid, None)
-    except Exception:
-        logger.exception("Failed to register observed OID", extra={"oid": oid})
-
-
 def materialize_pd_execution(event: TelemetryEvent) -> None:
     try:
         logger.info(
@@ -71,9 +62,6 @@ def materialize_pd_execution(event: TelemetryEvent) -> None:
             else ""
         )
         outcome = "success" if outcome_status == "success" else "failure"
-
-        _register_oid_safe(event.sourceOid)
-        _register_oid_safe(event.targetOid)
 
         upsert_execution(
             request_id=event.correlation.requestId,
