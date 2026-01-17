@@ -1,7 +1,8 @@
 import json
 import logging
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 
+from app.auth.dependencies import require_auth
 from app.db.connection import get_connection
 from app.oids.repository import register_observed_oid
 from app.telemetry.models import TelemetryEvent
@@ -26,7 +27,7 @@ def _register_oid_safe(oid: str | None) -> None:
 
 
 @router.post("/events")
-async def ingest_event(payload: dict = Body(...)):
+async def ingest_event(payload: dict = Body(...), user_id: int = Depends(require_auth)):
     event: TelemetryEvent | None = None
     try:
         event = validate_event_payload(payload)
@@ -101,7 +102,7 @@ async def ingest_event(payload: dict = Body(...)):
 
 
 @router.get("/events")
-async def list_events():
+async def list_events(user_id: int = Depends(require_auth)):
     try:
         conn = get_connection()
 

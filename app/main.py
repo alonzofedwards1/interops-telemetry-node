@@ -10,6 +10,7 @@ ROOT_PATH = Path(__file__).resolve().parent.parent
 if str(ROOT_PATH) not in sys.path:
     sys.path.insert(0, str(ROOT_PATH))
 
+from app.api.auth import router as auth_router
 from app.api.findings import router as findings_router
 from app.api.oids import router as oids_router
 from app.api.pd_executions import router as pd_executions_router
@@ -28,9 +29,10 @@ app.add_middleware(
     allow_origins=settings.allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=False,
+    allow_credentials=True,
 )
 
+app.include_router(auth_router, prefix="/api")
 app.include_router(telemetry_router, prefix="/api")
 app.include_router(pd_executions_router, prefix="/api")
 app.include_router(findings_router, prefix="/api")
