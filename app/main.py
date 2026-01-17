@@ -26,10 +26,10 @@ app = FastAPI(title="InterOps Telemetry API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins,
+    allow_origins=settings.allowed_origins,   # MUST be explicit
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=True,
+    allow_credentials=True,                   # Cookies enabled
 )
 
 app.include_router(auth_router, prefix="/api")
@@ -51,6 +51,7 @@ async def health():
         "db_path": settings.telemetry_db_path,
         "port": settings.port,
         "environment": settings.environment,
+        "allowed_origins": settings.allowed_origins,
     }
 
 
