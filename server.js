@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -6,8 +7,34 @@ const sqlite3 = require('sqlite3').verbose();
 // Basic Express app setup
 const app = express();
 const port = process.env.PORT || 8081;
+const sessionTtlSeconds = Number.parseInt(process.env.AUTH_SESSION_TTL_SECONDS || '43200', 10);
+const authCookieName = process.env.AUTH_COOKIE_NAME || 'telemetry_auth';
+const authUsername = process.env.AUTH_USERNAME || '';
+const authPassword = process.env.AUTH_PASSWORD || '';
+const authPasswordSalt = process.env.AUTH_PASSWORD_SALT || '';
+const authCookieSecure =
+  process.env.AUTH_COOKIE_SECURE === 'true' ? true : process.env.NODE_ENV === 'production';
+const allowedOrigins = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
-app.use(cors());
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+      if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error(`Origin ${origin} not allowed by CORS`));
+    },
+    credentials: true,
+  }),
+);
 app.use(express.json({ limit: '1mb' }));
 
 // SQLite setup
@@ -52,7 +79,108 @@ db.serialize(() => {
       }
     },
   );
+  db.run(
+    `CREATE TABLE IF NOT EXISTS telemetry_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      token_hash TEXT NOT NULL,
+      username TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`,
+    (err) => {
+      if (err) {
+        console.error('[telemetry] failed to ensure telemetry_sessions table', err);
+      } else {
+        console.log('[telemetry] ensured telemetry_sessions table (auto-created if missing)');
+      }
+    },
+  );
 });
+
+function parseCookies(cookieHeader) {
+  if (!cookieHeader) return {};
+  return cookieHeader.split(';').reduce((accumulator, chunk) => {
+    const [rawKey, ...rawValue] = chunk.trim().split('=');
+    if (!rawKey) return accumulator;
+    const value = rawValue.join('=');
+    accumulator[rawKey] = decodeURIComponent(value);
+    return accumulator;
+  }, {});
+}
+
+function hashToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+function hashPassword(password) {
+  return crypto.createHash('sha256').update(`${authPasswordSalt}:${password}`).digest('hex');
+}
+
+function isAuthConfigured() {
+  return authUsername.length > 0 && authPassword.length > 0;
+}
+
+function issueSession(username, callback) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const tokenHash = hashToken(token);
+  const expiresAt = Math.floor(Date.now() / 1000) + sessionTtlSeconds;
+
+  db.run(
+    'INSERT INTO telemetry_sessions (token_hash, username, expires_at) VALUES (?,?,?)',
+    [tokenHash, username, expiresAt],
+    (err) => {
+      if (err) {
+        callback(err);
+        return;
+      }
+      callback(null, token, expiresAt);
+    },
+  );
+}
+
+function clearSession(token, callback) {
+  if (!token) {
+    callback(null);
+    return;
+  }
+  db.run('DELETE FROM telemetry_sessions WHERE token_hash = ?', [hashToken(token)], (err) => {
+    callback(err || null);
+  });
+}
+
+function requireAuth(req, res, next) {
+  if (!isAuthConfigured()) {
+    res.status(500).json({ error: 'Authentication is not configured on the server.' });
+    return;
+  }
+
+  const cookies = parseCookies(req.headers.cookie);
+  const token = cookies[authCookieName];
+
+  if (!token) {
+    res.status(401).json({ error: 'Authentication required.' });
+    return;
+  }
+
+  const tokenHash = hashToken(token);
+  db.get(
+    "SELECT username, expires_at FROM telemetry_sessions WHERE token_hash = ? AND expires_at > strftime('%s','now')",
+    [tokenHash],
+    (err, row) => {
+      if (err) {
+        console.error('[telemetry] auth lookup failed', err);
+        res.sendStatus(500);
+        return;
+      }
+      if (!row) {
+        res.status(401).json({ error: 'Invalid or expired session.' });
+        return;
+      }
+      req.user = { username: row.username };
+      next();
+    },
+  );
+}
 
 function isValidTelemetry(event) {
   if (!event || typeof event !== 'object') return false;
@@ -175,7 +303,7 @@ function storeTelemetryEvent(payload) {
 }
 
 // Telemetry ingestion (non-blocking, always returns 202)
-app.post('/api/telemetry/events', (req, res) => {
+app.post('/api/telemetry/events', requireAuth, (req, res) => {
   try {
     const payload = req.body || {};
     const eventId = typeof payload.eventId === 'string' ? payload.eventId : 'unknown-id';
@@ -194,7 +322,7 @@ app.post('/api/telemetry/events', (req, res) => {
 });
 
 // Telemetry read endpoint
-app.get('/api/telemetry/events', (_req, res) => {
+app.get('/api/telemetry/events', requireAuth, (_req, res) => {
   try {
     db.all('SELECT raw_payload FROM telemetry_events ORDER BY id ASC', (err, rows) => {
       if (err) {
@@ -218,6 +346,69 @@ app.get('/api/telemetry/events', (_req, res) => {
     console.error('[telemetry] error reading telemetry store', err);
     res.json([]);
   }
+});
+
+app.post('/api/auth/login', (req, res) => {
+  if (!isAuthConfigured()) {
+    res.status(500).json({ error: 'Authentication is not configured on the server.' });
+    return;
+  }
+
+  const { username, password } = req.body || {};
+  if (typeof username !== 'string' || typeof password !== 'string') {
+    res.status(400).json({ error: 'Username and password are required.' });
+    return;
+  }
+
+  const expectedHash = hashPassword(authPassword);
+  const providedHash = hashPassword(password);
+  const isUsernameMatch = username === authUsername;
+  const isPasswordMatch =
+    expectedHash.length === providedHash.length &&
+    crypto.timingSafeEqual(Buffer.from(expectedHash), Buffer.from(providedHash));
+
+  if (!isUsernameMatch || !isPasswordMatch) {
+    res.status(401).json({ error: 'Invalid credentials.' });
+    return;
+  }
+
+  issueSession(username, (err, token, expiresAt) => {
+    if (err) {
+      console.error('[telemetry] failed to issue session', err);
+      res.sendStatus(500);
+      return;
+    }
+
+    res.cookie(authCookieName, token, {
+      httpOnly: true,
+      secure: authCookieSecure,
+      sameSite: 'lax',
+      maxAge: sessionTtlSeconds * 1000,
+    });
+    res.json({ username, expiresAt });
+  });
+});
+
+app.post('/api/auth/logout', requireAuth, (req, res) => {
+  const cookies = parseCookies(req.headers.cookie);
+  const token = cookies[authCookieName];
+  clearSession(token, (err) => {
+    if (err) {
+      console.error('[telemetry] failed to clear session', err);
+      res.sendStatus(500);
+      return;
+    }
+    res.clearCookie(authCookieName, {
+      httpOnly: true,
+      secure: authCookieSecure,
+      sameSite: 'lax',
+    });
+    res.sendStatus(204);
+  });
+});
+
+app.get('/api/auth/me', requireAuth, (req, res) => {
+  res.json({ username: req.user?.username });
 });
 
 // Simple health check
