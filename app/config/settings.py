@@ -31,6 +31,12 @@ class Settings:
     # CORS
     allowed_origins: List[str] | None = None
 
+    # Auth
+    auth_cookie_name: str = os.environ.get("AUTH_COOKIE_NAME", "telemetry_auth")
+    auth_cookie_secure: bool = os.environ.get("AUTH_COOKIE_SECURE", "false").lower() == "true"
+    auth_session_ttl_seconds: int = int(os.environ.get("AUTH_SESSION_TTL_SECONDS", "43200"))
+    auth_password_salt: str = os.environ.get("AUTH_PASSWORD_SALT", "")
+
 
 def get_settings() -> Settings:
     origins_value = os.environ.get("CORS_ORIGINS", "*")
