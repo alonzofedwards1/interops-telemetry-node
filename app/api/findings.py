@@ -70,7 +70,6 @@ async def get_findings(
                     {
                         "id": row["organization_id"],
                         "name": row["organization_name"],
-                        "type": row.get("organization_type"),
                     }
                     if row.get("organization_id")
                     else None
@@ -137,7 +136,6 @@ async def get_finding(finding_id: str):
                 {
                     "id": row["organization_id"],
                     "name": row["organization_name"],
-                    "type": row.get("organization_type"),
                 }
                 if row.get("organization_id")
                 else None

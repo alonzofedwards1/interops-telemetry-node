@@ -220,6 +220,7 @@ def add_or_update_finding(
     summary: str,
     technical_detail: str | None,
     recommended_action: str | None,
+    related_oid: str | None = None,
     status: str = "open",
 ) -> None:
     now = _utc_now()
@@ -237,12 +238,13 @@ def add_or_update_finding(
                 summary,
                 technical_detail,
                 recommended_action,
+                related_oid,
                 status,
                 first_seen_at,
                 last_seen_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 execution_id = excluded.execution_id,
                 execution_type = excluded.execution_type,
@@ -251,6 +253,7 @@ def add_or_update_finding(
                 summary = excluded.summary,
                 technical_detail = COALESCE(excluded.technical_detail, findings.technical_detail),
                 recommended_action = COALESCE(excluded.recommended_action, findings.recommended_action),
+                related_oid = excluded.related_oid,
                 status = excluded.status,
                 last_seen_at = excluded.last_seen_at,
                 updated_at = excluded.updated_at
@@ -264,6 +267,7 @@ def add_or_update_finding(
                 summary,
                 technical_detail,
                 recommended_action,
+                related_oid,
                 status,
                 now,
                 now,
