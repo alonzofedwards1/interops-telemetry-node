@@ -1,6 +1,13 @@
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class OrganizationOut(BaseModel):
+    id: str = Field(..., description="Organization identifier")
+    name: str = Field(..., description="Organization display name")
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+
 class FindingOut(BaseModel):
     id: str = Field(..., description="Finding identifier")
     executionId: str | None = Field(None, description="Related execution identifier")
@@ -11,6 +18,8 @@ class FindingOut(BaseModel):
     technicalDetail: str | None = Field(None, description="Technical details")
     recommendedAction: str | None = Field(None, description="Recommended action")
     status: str = Field(..., description="Finding status")
+    relatedOid: str | None = Field(None, description="Related OID")
+    organization: OrganizationOut | None = Field(None, description="Related organization")
     firstSeenAt: str | None = Field(None, description="First seen timestamp")
     lastSeenAt: str | None = Field(None, description="Last seen timestamp")
     createdAt: str | None = Field(None, description="Created timestamp")
