@@ -38,7 +38,10 @@ def get_settings() -> Settings:
         allowed_origins=origins,
 
         auth_cookie_name=os.environ.get("AUTH_COOKIE_NAME", "telemetry_auth"),
-        auth_cookie_secure=os.environ.get("AUTH_COOKIE_SECURE", "false").lower() == "true",
+
+        #  MUST be False for localhost (http)
+        auth_cookie_secure=False,
+
         auth_session_ttl_seconds=int(os.environ.get("AUTH_SESSION_TTL_SECONDS", "43200")),
         auth_password_salt=os.environ.get("AUTH_PASSWORD_SALT", "dev_salt_123"),
     )

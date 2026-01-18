@@ -4,7 +4,12 @@ from typing import List
 from fastapi import APIRouter, Body, HTTPException, Query
 
 from app.config.settings import get_settings
-from app.findings.models import FindingCreate, FindingOut, FindingStatusUpdate, FindingsCountOut
+from app.findings.models import (
+    FindingCreate,
+    FindingOut,
+    FindingStatusUpdate,
+    FindingsCountOut,
+)
 from app.findings.repository import (
     add_or_update_finding,
     get_finding_by_id,
@@ -17,6 +22,10 @@ router = APIRouter(prefix="/findings", tags=["findings"])
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+
+# ============================================================
+# GET /findings
+# ============================================================
 
 @router.get("", response_model=List[FindingOut])
 async def get_findings(
@@ -32,19 +41,6 @@ async def get_findings(
     order: str = "desc",
 ):
     try:
-        logger.info(
-            "FINDINGS_LIST",
-            extra={
-                "limit": limit,
-                "offset": offset,
-                "severity": severity,
-                "status": status,
-                "category": category,
-                "execution_type": execution_type,
-                "execution_id": execution_id,
-                "q": q,
-            },
-        )
         rows = list_findings(
             limit=limit,
             offset=offset,
@@ -57,6 +53,7 @@ async def get_findings(
             sort=sort,
             order=order,
         )
+
         return [
             FindingOut(
                 id=row["id"],
@@ -68,6 +65,16 @@ async def get_findings(
                 technicalDetail=row.get("technical_detail"),
                 recommendedAction=row.get("recommended_action"),
                 status=row["status"],
+                relatedOid=row.get("related_oid"),
+                organization=(
+                    {
+                        "id": row["organization_id"],
+                        "name": row["organization_name"],
+                        "type": row.get("organization_type"),
+                    }
+                    if row.get("organization_id")
+                    else None
+                ),
                 firstSeenAt=row.get("first_seen_at"),
                 lastSeenAt=row.get("last_seen_at"),
                 createdAt=row.get("created_at"),
@@ -75,10 +82,15 @@ async def get_findings(
             )
             for row in rows
         ]
+
     except Exception:
         logger.exception("Failed to list findings")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+
+# ============================================================
+# GET /findings/count
+# ============================================================
 
 @router.get("/count", response_model=FindingsCountOut)
 async def get_findings_count(
@@ -87,32 +99,29 @@ async def get_findings_count(
     execution_type: str | None = None,
 ):
     try:
-        logger.info(
-            "FINDINGS_COUNT",
-            extra={
-                "severity": severity,
-                "status": status,
-                "execution_type": execution_type,
-            },
-        )
         counts = get_findings_counts(
             severity=severity,
             status=status,
             execution_type=execution_type,
         )
         return FindingsCountOut(**counts)
+
     except Exception:
         logger.exception("Failed to get findings count")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+# ============================================================
+# GET /findings/{id}
+# ============================================================
+
 @router.get("/{finding_id}", response_model=FindingOut)
 async def get_finding(finding_id: str):
     try:
-        logger.info("FINDING_DETAIL", extra={"finding_id": finding_id})
         row = get_finding_by_id(finding_id)
         if not row:
             raise HTTPException(status_code=404, detail="Finding not found")
+
         return FindingOut(
             id=row["id"],
             executionId=row.get("execution_id"),
@@ -123,17 +132,79 @@ async def get_finding(finding_id: str):
             technicalDetail=row.get("technical_detail"),
             recommendedAction=row.get("recommended_action"),
             status=row["status"],
+            relatedOid=row.get("related_oid"),
+            organization=(
+                {
+                    "id": row["organization_id"],
+                    "name": row["organization_name"],
+                    "type": row.get("organization_type"),
+                }
+                if row.get("organization_id")
+                else None
+            ),
             firstSeenAt=row.get("first_seen_at"),
             lastSeenAt=row.get("last_seen_at"),
             createdAt=row.get("created_at"),
             updatedAt=row.get("updated_at"),
         )
+
     except HTTPException:
         raise
     except Exception:
         logger.exception("Failed to get finding")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+
+# ============================================================
+# PATCH /findings/{id}/status
+# ============================================================
+
+@router.patch("/{finding_id}/status", response_model=FindingOut)
+async def update_status(finding_id: str, payload: FindingStatusUpdate):
+    try:
+        row = update_finding_status(
+            finding_id=finding_id,
+            status=payload.status,
+        )
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Finding not found")
+
+        return FindingOut(
+            id=row["id"],
+            executionId=row.get("execution_id"),
+            executionType=row.get("execution_type"),
+            severity=row["severity"],
+            category=row["category"],
+            summary=row["summary"],
+            technicalDetail=row.get("technical_detail"),
+            recommendedAction=row.get("recommended_action"),
+            status=row["status"],
+            relatedOid=row.get("related_oid"),
+            organization=(
+                {
+                    "id": row["organization_id"],
+                    "name": row["organization_name"]
+                }
+                if row.get("organization_id")
+                else None
+            ),
+            firstSeenAt=row.get("first_seen_at"),
+            lastSeenAt=row.get("last_seen_at"),
+            createdAt=row.get("created_at"),
+            updatedAt=row.get("updated_at"),
+        )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to update finding status")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ============================================================
+# POST /findings/seed-demo
+# ============================================================
 
 @router.post("/seed-demo")
 async def seed_demo_findings(payload: dict = Body(None)):
@@ -145,11 +216,6 @@ async def seed_demo_findings(payload: dict = Body(None)):
         if isinstance(payload, dict):
             execution_id = payload.get("execution_id") or payload.get("executionId")
         execution_id = execution_id or "req-local-001"
-
-        logger.info(
-            "FINDINGS_SEED",
-            extra={"execution_id": execution_id},
-        )
 
         demo_findings = [
             FindingCreate(
@@ -201,40 +267,9 @@ async def seed_demo_findings(payload: dict = Body(None)):
             )
 
         return {"status": "ok", "count": len(demo_findings)}
+
     except HTTPException:
         raise
     except Exception:
         logger.exception("Failed to seed demo findings")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@router.patch("/{finding_id}/status", response_model=FindingOut)
-async def update_status(finding_id: str, payload: FindingStatusUpdate):
-    try:
-        logger.info(
-            "FINDING_STATUS_UPDATE",
-            extra={"finding_id": finding_id, "status": payload.status},
-        )
-        row = update_finding_status(finding_id=finding_id, status=payload.status)
-        if not row:
-            raise HTTPException(status_code=404, detail="Finding not found")
-        return FindingOut(
-            id=row["id"],
-            executionId=row.get("execution_id"),
-            executionType=row.get("execution_type"),
-            severity=row["severity"],
-            category=row["category"],
-            summary=row["summary"],
-            technicalDetail=row.get("technical_detail"),
-            recommendedAction=row.get("recommended_action"),
-            status=row["status"],
-            firstSeenAt=row.get("first_seen_at"),
-            lastSeenAt=row.get("last_seen_at"),
-            createdAt=row.get("created_at"),
-            updatedAt=row.get("updated_at"),
-        )
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Failed to update finding status")
         raise HTTPException(status_code=500, detail="Internal server error")

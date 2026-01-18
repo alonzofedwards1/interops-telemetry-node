@@ -23,6 +23,10 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+# ============================================================
+# LIST FINDINGS (WITH ORGANIZATION RESOLUTION)
+# ============================================================
+
 def list_findings(
     *,
     limit: int = 50,
@@ -36,62 +40,68 @@ def list_findings(
     sort: str = "created_at",
     order: str = "desc",
 ) -> list[dict[str, Any]]:
-    if sort not in _ALLOWED_SORT_FIELDS:
-        sort = "created_at"
-    if order not in _ALLOWED_ORDER:
-        order = "desc"
+    sort = f"f.{sort}" if sort in _ALLOWED_SORT_FIELDS else "f.created_at"
+    order = order if order in _ALLOWED_ORDER else "desc"
 
-    where_clauses = []
+    where_clauses: list[str] = []
     params: list[Any] = []
 
     if severity:
-        where_clauses.append("severity = ?")
+        where_clauses.append("f.severity = ?")
         params.append(severity)
     if status:
-        where_clauses.append("status = ?")
+        where_clauses.append("f.status = ?")
         params.append(status)
     if category:
-        where_clauses.append("category = ?")
+        where_clauses.append("f.category = ?")
         params.append(category)
     if execution_type:
-        where_clauses.append("execution_type = ?")
+        where_clauses.append("f.execution_type = ?")
         params.append(execution_type)
     if execution_id:
-        where_clauses.append("execution_id = ?")
+        where_clauses.append("f.execution_id = ?")
         params.append(execution_id)
     if q:
-        where_clauses.append("(summary LIKE ? OR technical_detail LIKE ?)")
-        like_value = f"%{q}%"
-        params.extend([like_value, like_value])
+        where_clauses.append("(f.summary LIKE ? OR f.technical_detail LIKE ?)")
+        like = f"%{q}%"
+        params.extend([like, like])
 
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
     query = f"""
         SELECT
-            id,
-            execution_id,
-            execution_type,
-            severity,
-            category,
-            summary,
-            technical_detail,
-            recommended_action,
-            status,
-            first_seen_at,
-            last_seen_at,
-            created_at,
-            updated_at
-        FROM findings
+            f.id,
+            f.execution_id,
+            f.execution_type,
+            f.severity,
+            f.category,
+            f.summary,
+            f.technical_detail,
+            f.recommended_action,
+            f.status,
+            f.first_seen_at,
+            f.last_seen_at,
+            f.created_at,
+            f.updated_at,
+
+            f.related_oid,
+            org.id AS organization_id,
+            org.display_name AS organization_name
+
+        FROM findings f
+        LEFT JOIN oid_directory od
+            ON od.oid = f.related_oid
+        LEFT JOIN organization_oids oo
+            ON oo.oid = od.oid
+        LEFT JOIN organizations org
+            ON org.id = oo.organization_id
+
         {where_sql}
         ORDER BY {sort} {order}
         LIMIT ? OFFSET ?
     """
-    params.extend([limit, offset])
 
-    logger.debug(
-        "list_findings",
-        extra={"params": params, "sort": sort, "order": order},
-    )
+    params.extend([limit, offset])
 
     conn = get_connection()
     try:
@@ -104,31 +114,41 @@ def list_findings(
         conn.close()
 
 
+# ============================================================
+# GET FINDING BY ID
+# ============================================================
+
 def get_finding_by_id(finding_id: str) -> dict[str, Any] | None:
-    logger.debug("get_finding_by_id", extra={"id": finding_id})
+    query = """
+        SELECT
+            f.id,
+            f.execution_id,
+            f.execution_type,
+            f.severity,
+            f.category,
+            f.summary,
+            f.technical_detail,
+            f.recommended_action,
+            f.status,
+            f.first_seen_at,
+            f.last_seen_at,
+            f.created_at,
+            f.updated_at,
+
+            f.related_oid,
+            org.id AS organization_id,
+            org.display_name AS organization_name
+
+        FROM findings f
+        LEFT JOIN oid_directory od ON od.oid = f.related_oid
+        LEFT JOIN organization_oids oo ON oo.oid = od.oid
+        LEFT JOIN organizations org ON org.id = oo.organization_id
+        WHERE f.id = ?
+    """
+
     conn = get_connection()
     try:
-        row = conn.execute(
-            """
-            SELECT
-                id,
-                execution_id,
-                execution_type,
-                severity,
-                category,
-                summary,
-                technical_detail,
-                recommended_action,
-                status,
-                first_seen_at,
-                last_seen_at,
-                created_at,
-                updated_at
-            FROM findings
-            WHERE id = ?
-            """,
-            (finding_id,),
-        ).fetchone()
+        row = conn.execute(query, (finding_id,)).fetchone()
         return dict(row) if row else None
     except Exception:
         logger.exception("Failed get_finding_by_id query")
@@ -136,6 +156,10 @@ def get_finding_by_id(finding_id: str) -> dict[str, Any] | None:
     finally:
         conn.close()
 
+
+# ============================================================
+# COUNTS
+# ============================================================
 
 def get_findings_counts(
     *,
@@ -171,36 +195,20 @@ def get_findings_counts(
         {where_sql}
     """
 
-    logger.debug("get_findings_counts", extra={"params": params})
-
     conn = get_connection()
     try:
         row = conn.execute(query, params).fetchone()
-        if not row:
-            return {
-                "total": 0,
-                "warnings": 0,
-                "critical": 0,
-                "info": 0,
-                "open": 0,
-                "acknowledged": 0,
-                "resolved": 0,
-            }
-        return {
-            "total": int(row["total"] or 0),
-            "warnings": int(row["warnings"] or 0),
-            "critical": int(row["critical"] or 0),
-            "info": int(row["info"] or 0),
-            "open": int(row["open"] or 0),
-            "acknowledged": int(row["acknowledged"] or 0),
-            "resolved": int(row["resolved"] or 0),
-        }
+        return {k: int(row[k] or 0) for k in row.keys()} if row else {}
     except Exception:
         logger.exception("Failed get_findings_counts query")
         raise
     finally:
         conn.close()
 
+
+# ============================================================
+# WRITE OPERATIONS (RESTORED)
+# ============================================================
 
 def add_or_update_finding(
     *,
@@ -215,16 +223,7 @@ def add_or_update_finding(
     status: str = "open",
 ) -> None:
     now = _utc_now()
-    logger.debug(
-        "add_or_update_finding",
-        extra={
-            "id": id,
-            "execution_id": execution_id,
-            "execution_type": execution_type,
-            "severity": severity,
-            "status": status,
-        },
-    )
+
     conn = get_connection()
     try:
         conn.execute(
@@ -281,7 +280,7 @@ def add_or_update_finding(
 
 def update_finding_status(*, finding_id: str, status: str) -> dict[str, Any] | None:
     now = _utc_now()
-    logger.debug("update_finding_status", extra={"id": finding_id, "status": status})
+
     conn = get_connection()
     try:
         conn.execute(
@@ -293,28 +292,7 @@ def update_finding_status(*, finding_id: str, status: str) -> dict[str, Any] | N
             (status, now, finding_id),
         )
         conn.commit()
-        row = conn.execute(
-            """
-            SELECT
-                id,
-                execution_id,
-                execution_type,
-                severity,
-                category,
-                summary,
-                technical_detail,
-                recommended_action,
-                status,
-                first_seen_at,
-                last_seen_at,
-                created_at,
-                updated_at
-            FROM findings
-            WHERE id = ?
-            """,
-            (finding_id,),
-        ).fetchone()
-        return dict(row) if row else None
+        return get_finding_by_id(finding_id)
     except Exception:
         logger.exception("Failed update_finding_status query")
         raise
