@@ -47,7 +47,7 @@ def clear_tables(conn):
     conn.commit()
 
 # ============================================================
-# Seed Organizations + Primary OIDs (CORRECT ORDER)
+# Seed Organizations + Primary OIDs
 # ============================================================
 
 ORG_STATES = ["TX", "CA", "NY", "FL", "VA"]
@@ -71,7 +71,6 @@ def seed_organizations_and_oids(cursor):
         hie = random.choice(["CRISP", "Epic", "Carequality"])
         state = random.choice(ORG_STATES)
 
-        # ---- organizations (PRIMARY OID SET HERE) ----
         cursor.execute(
             """
             INSERT INTO organizations (
@@ -98,7 +97,6 @@ def seed_organizations_and_oids(cursor):
             ),
         )
 
-        # ---- oid_directory ----
         cursor.execute(
             """
             INSERT INTO oid_directory (
@@ -127,7 +125,6 @@ def seed_organizations_and_oids(cursor):
             ),
         )
 
-        # ---- organization_oids ----
         cursor.execute(
             """
             INSERT INTO organization_oids (
@@ -152,40 +149,85 @@ def seed_organizations_and_oids(cursor):
     return orgs, oids
 
 # ============================================================
-# Seed PD Executions
+# Seed PD Executions (EXECUTION-INTELLIGENCE READY)
 # ============================================================
 
 def seed_pd_executions(cursor, oids, count=40):
     exec_ids = []
 
+    FAILURE_PROFILES = [
+        ("CERT_EXPIRED", "TLS", 495),
+        ("TIMEOUT", "TRANSPORT", None),
+        ("HTTP_ERROR", "APPLICATION", 500),
+        ("SCHEMA", "SOAP", 400),
+    ]
+
     for _ in range(count):
         request_id = str(uuid.uuid4())
-        started = datetime.now(timezone.utc) - timedelta(seconds=random.randint(1, 5))
-        completed = started + timedelta(milliseconds=random.randint(150, 3000))
+        started = datetime.now(timezone.utc) - timedelta(seconds=random.randint(1, 60))
+        completed = started + timedelta(milliseconds=random.randint(150, 6000))
+        duration_ms = int((completed - started).total_seconds() * 1000)
+
+        is_failure = random.random() < 0.25
+
+        if is_failure:
+            root_cause, failure_stage, http_status = random.choice(FAILURE_PROFILES)
+            outcome = "failure"
+            retry_count = random.randint(1, 3)
+            cert_thumbprint = (
+                f"{random.randint(10,99):X}:{random.randint(10,99):X}:{random.randint(10,99):X}"
+                if root_cause == "CERT_EXPIRED"
+                else None
+            )
+        else:
+            root_cause = None
+            failure_stage = None
+            http_status = 200
+            outcome = "success"
+            retry_count = 0
+            cert_thumbprint = None
 
         cursor.execute(
             """
             INSERT INTO pd_executions (
                 request_id,
+                transaction_type,
+                direction,
                 started_at,
                 completed_at,
                 duration_ms,
                 outcome,
+                root_cause,
+                failure_stage,
+                http_status,
+                retry_count,
+                cert_thumbprint,
+                source_environment,
                 source_oid,
                 target_oid,
-                qhin_name
+                qhin_name,
+                created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 request_id,
+                "PD",
+                random.choice(["inbound", "outbound"]),
                 started.isoformat(),
                 completed.isoformat(),
-                int((completed - started).total_seconds() * 1000),
-                random.choice(["success", "failure"]),
+                duration_ms,
+                outcome,
+                root_cause,
+                failure_stage,
+                http_status,
+                retry_count,
+                cert_thumbprint,
+                random.choice(["prod", "stage"]),
                 random.choice(oids),
                 random.choice(oids),
                 random.choice(["CommonWell", "eHealthExchange"]),
+                now(),
             ),
         )
 
@@ -194,7 +236,7 @@ def seed_pd_executions(cursor, oids, count=40):
     return exec_ids
 
 # ============================================================
-# Seed Findings (JOIN-SAFE)
+# Seed Findings
 # ============================================================
 
 SEVERITIES = ["info", "warning", "critical"]
@@ -227,7 +269,7 @@ def seed_findings(cursor, exec_ids, oids, count=100):
                 random.choice(SEVERITIES),
                 "Patient Discovery",
                 "Patient Discovery anomaly detected",
-                "PD response did not meet expected behavior",
+                "PD execution deviated from expected behavior",
                 "Verify demographics and retry",
                 random.choice(STATUSES),
                 random.choice(oids),
@@ -241,7 +283,7 @@ def seed_findings(cursor, exec_ids, oids, count=100):
 # ============================================================
 
 def main():
-    print("🌱 Seeding demo dataset (authoritative, schema-safe)…")
+    print("🌱 Seeding demo dataset (execution-intelligence enabled)…")
 
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL;")
@@ -256,7 +298,7 @@ def main():
     print("✅ organizations + primary OIDs")
 
     exec_ids = seed_pd_executions(cursor, oids)
-    print("✅ pd_executions")
+    print("✅ pd_executions (with root causes)")
 
     seed_findings(cursor, exec_ids, oids)
     print("✅ findings")
