@@ -1,45 +1,23 @@
-from fastapi import APIRouter, Depends
-import sqlite3
-from pathlib import Path
+import logging
 
-DB_PATH = Path(__file__).resolve().parents[2] / "db" / "telemetry.db"
+from fastapi import APIRouter, Depends, HTTPException
 
-router = APIRouter(
-    prefix="/health",
-    tags=["Integration Health"]
-)
+from app.db.connection import get_connection
+from app.integration_health.store import get_integration_health
 
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-    finally:
-        conn.close()
+router = APIRouter(prefix="/health", tags=["integration-health"])
+logger = logging.getLogger(__name__)
+
 
 @router.get("/integrations")
-def get_integration_health(db: sqlite3.Connection = Depends(get_db)):
-    sql = """
-        SELECT
-            COUNT(*) AS totalExecutions,
-            SUM(CASE WHEN LOWER(outcome) = 'success' THEN 1 ELSE 0 END) AS successExecutions,
-            COUNT(DISTINCT CASE WHEN root_cause = 'CERT_EXPIRED' THEN cert_thumbprint END) AS expiredCerts,
-            COUNT(DISTINCT CASE WHEN root_cause = 'CERT_EXPIRED' THEN qhin_name END) AS affectedPartners
-        FROM pd_executions
-    """
-
-    row = db.execute(sql).fetchone()
-
-    total = row["totalExecutions"] or 0
-    success = row["successExecutions"] or 0
-
-    return {
-        "totalExecutions": total,
-        "successRate": round((success / total) * 100, 2) if total else 0,
-        "certificateHealth": {
-            "expired": row["expiredCerts"] or 0,
-            "expiringSoon": 0,
-            "valid": None
-        },
-        "affectedPartners": row["affectedPartners"] or 0
-    }
+async def integration_health(conn=Depends(get_connection)):
+    try:
+        return get_integration_health(conn)
+    except Exception:
+        logger.exception("Failed to load integration health")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            logger.exception("Failed to close integration health connection")
