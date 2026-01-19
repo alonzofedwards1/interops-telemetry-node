@@ -218,7 +218,19 @@ def update_oid_governance(
                 raise ValueError("Unknown governance action")
 
             allowed = _STATUS_TRANSITIONS.get(current_status, set())
+
             if target_status not in allowed:
+                logger.error(
+                    "INVALID_GOVERNANCE_TRANSITION",
+                    extra={
+                        "oid": oid,
+                        "current_status": current_status,
+                        "attempted_action": action_upper,
+                        "target_status": target_status,
+                        "allowed_targets": list(allowed),
+                        "reviewed_by": reviewed_by,
+                    },
+                )
                 raise ValueError("Invalid status transition")
 
             conn.execute(
