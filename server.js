@@ -437,6 +437,41 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
   res.json({ userId: req.user?.userId });
 });
 
+app.get('/api/health/integrations', (_req, res) => {
+  const sql = `
+    SELECT
+      (SELECT COUNT(*) FROM pd_executions) AS totalExecutions,
+      (SELECT COUNT(*) FROM pd_executions WHERE LOWER(outcome) = 'success') AS successExecutions,
+      (SELECT COUNT(DISTINCT cert_thumbprint) FROM pd_executions WHERE root_cause = 'CERT_EXPIRED') AS expiredCerts,
+      (SELECT COUNT(DISTINCT qhin_name) FROM pd_executions WHERE root_cause = 'CERT_EXPIRED') AS affectedPartners
+  `;
+
+  db.get(sql, (err, row) => {
+    if (err) {
+      console.error('[telemetry] failed to load integration health', err);
+      res.status(500).json({ error: 'Failed to load integration health.' });
+      return;
+    }
+
+    const totalExecutions = Number(row?.totalExecutions || 0);
+    const successExecutions = Number(row?.successExecutions || 0);
+    const expiredCerts = Number(row?.expiredCerts || 0);
+    const affectedPartners = Number(row?.affectedPartners || 0);
+    const successRate = totalExecutions > 0 ? (successExecutions / totalExecutions) * 100 : 0;
+
+    res.json({
+      totalExecutions,
+      successRate,
+      certificateHealth: {
+        expired: expiredCerts,
+        expiringSoon: 0,
+        valid: null,
+      },
+      affectedPartners,
+    });
+  });
+});
+
 // Simple health check
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
