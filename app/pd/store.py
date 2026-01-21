@@ -19,14 +19,11 @@ def upsert_execution(
     source_environment: str | None = None,
     source_oid: str | None = None,
     target_oid: str | None = None,
-
-    # ✅ Certificate + failure metadata (store-authoritative)
-    cert_status: str = "UNKNOWN",
-    cert_thumbprint: str | None = None,
-    failure_stage: str | None = None,
-    root_cause: str | None = None,
-    http_status: int | None = None,
-    retry_count: int | None = None,
+    cert_status: str,
+    cert_thumbprint: str | None,
+    failure_stage: str | None,
+    root_cause: str | None,
+    http_status: int | None,
 ) -> None:
     try:
         logger.info(
@@ -46,6 +43,11 @@ def upsert_execution(
                 outcome,
                 source_channel_id,
                 source_environment,
+                cert_status,
+                cert_thumbprint,
+                failure_stage,
+                root_cause,
+                http_status,
                 source_oid,
                 target_oid,
 
@@ -59,7 +61,7 @@ def upsert_execution(
                 first_event_id,
                 last_event_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(request_id) DO UPDATE SET
                 started_at = COALESCE(excluded.started_at, pd_executions.started_at),
                 completed_at = COALESCE(excluded.completed_at, pd_executions.completed_at),
@@ -68,6 +70,11 @@ def upsert_execution(
 
                 source_channel_id = COALESCE(excluded.source_channel_id, pd_executions.source_channel_id),
                 source_environment = COALESCE(excluded.source_environment, pd_executions.source_environment),
+                cert_status = COALESCE(excluded.cert_status, pd_executions.cert_status),
+                cert_thumbprint = COALESCE(excluded.cert_thumbprint, pd_executions.cert_thumbprint),
+                failure_stage = COALESCE(excluded.failure_stage, pd_executions.failure_stage),
+                root_cause = COALESCE(excluded.root_cause, pd_executions.root_cause),
+                http_status = COALESCE(excluded.http_status, pd_executions.http_status),
                 source_oid = COALESCE(excluded.source_oid, pd_executions.source_oid),
                 target_oid = COALESCE(excluded.target_oid, pd_executions.target_oid),
 
@@ -88,6 +95,11 @@ def upsert_execution(
                 outcome,
                 source_channel_id,
                 source_environment,
+                cert_status,
+                cert_thumbprint,
+                failure_stage,
+                root_cause,
+                http_status,
                 source_oid,
                 target_oid,
 
@@ -138,15 +150,11 @@ def list_executions(limit: int = 500) -> List[PDExecution]:
             outcome,
             source_channel_id,
             source_environment,
-
             cert_status,
             cert_thumbprint,
             failure_stage,
             root_cause,
-            http_status,
-            retry_count,
-
-            qhin_name
+            http_status
         FROM pd_executions
         ORDER BY completed_at DESC
         LIMIT ?
@@ -164,15 +172,11 @@ def list_executions(limit: int = 500) -> List[PDExecution]:
             outcome=row["outcome"],
             channelId=row["source_channel_id"],
             environment=row["source_environment"],
-
-            certStatus=row["cert_status"],
+            certStatus=row["cert_status"] or "NOT_REPORTED",
             certThumbprint=row["cert_thumbprint"],
-            failureStage=row["failure_stage"],
-            rootCause=row["root_cause"],
+            failureStage=row["failure_stage"] or "UNKNOWN",
+            rootCause=row["root_cause"] or "UNKNOWN",
             httpStatus=row["http_status"],
-            retryCount=row["retry_count"],
-
-            qhinName=row["qhin_name"],
         )
         for row in rows
     ]

@@ -30,6 +30,11 @@ CREATE TABLE IF NOT EXISTS pd_executions (
     outcome TEXT,
     source_channel_id TEXT,
     source_environment TEXT,
+    cert_status TEXT DEFAULT 'NOT_REPORTED',
+    cert_thumbprint TEXT,
+    failure_stage TEXT,
+    root_cause TEXT,
+    http_status INTEGER,
     first_event_id TEXT,
     last_event_id TEXT
 );
