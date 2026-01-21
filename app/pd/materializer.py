@@ -81,8 +81,6 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
     outcome = "failure"
 
     application_events = [r for r in rows if r["event_layer"] == "APPLICATION"]
-    transport_events = [r for r in rows if r["event_layer"] == "TRANSPORT"]
-
     if application_events:
         last_app = application_events[-1]
         if last_app["pd_response_code"] == "SUCCESS":
@@ -138,11 +136,11 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
         source_environment=last["source_environment"],
         source_oid=None,
         target_oid=None,
-        cert_status=cert_status,
-        cert_thumbprint=cert_thumbprint,
-        failure_stage=failure_stage,
-        root_cause=root_cause,
-        http_status=http_status,
+        cert_status=None,
+        cert_thumbprint=None,
+        failure_stage=None,
+        root_cause=None,
+        http_status=None,
     )
 
     conn.commit()
@@ -156,11 +154,11 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
         outcome=outcome,
         channelId=last["source_channel_id"],
         environment=last["source_environment"],
-        certStatus=cert_status,
-        certThumbprint=cert_thumbprint,
-        failureStage=failure_stage,
-        rootCause=root_cause,
-        httpStatus=http_status,
+        certStatus="UNKNOWN",
+        certThumbprint=None,
+        failureStage=None,
+        rootCause=None,
+        httpStatus=None,
     )
 
     evaluate_pd_execution(execution)

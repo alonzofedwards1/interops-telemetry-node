@@ -1,5 +1,6 @@
 import logging
 
+from app.db.connection import get_connection
 from app.findings.repository import (
     add_or_update_finding,
     delete_finding_by_id,
@@ -8,9 +9,30 @@ from app.findings.repository import (
 )
 from app.findings.rules import pd  # noqa: F401
 from app.findings.rules.registry import get_rules
+from app.pd.certificates import extract_transport_evidence
 from app.pd.models import PDExecution
+from app.pd.store import update_execution_cert_fields
 
 logger = logging.getLogger(__name__)
+
+
+def _load_transport_events(request_id: str) -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT event_layer, status, raw_payload
+            FROM telemetry_events
+            WHERE correlation_request_id = ?
+              AND event_type = 'PD'
+              AND event_layer = 'TRANSPORT'
+            ORDER BY timestamp_utc ASC
+            """,
+            (request_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
 
 
 def evaluate_pd_execution(execution: PDExecution) -> None:
@@ -18,6 +40,18 @@ def evaluate_pd_execution(execution: PDExecution) -> None:
         "FINDINGS_EVALUATION_START",
         extra={"requestId": execution.requestId},
     )
+
+    transport_events = _load_transport_events(execution.requestId)
+    evidence = extract_transport_evidence(transport_events)
+    if any(value is not None for value in evidence.values()):
+        update_execution_cert_fields(
+            request_id=execution.requestId,
+            cert_status=evidence["cert_status"],
+            cert_thumbprint=evidence["cert_thumbprint"],
+            failure_stage=evidence["failure_stage"],
+            root_cause=evidence["root_cause"],
+            http_status=evidence["http_status"],
+        )
 
     for rule in get_rules():
         if not rule.applies_to(execution):
