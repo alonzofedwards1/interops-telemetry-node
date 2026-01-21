@@ -17,10 +17,12 @@ def _parse_ts(value: str) -> datetime:
 
 def materialize_execution_from_telemetry(request_id: str) -> None:
     """
-    Deterministically builds or updates a PD execution from telemetry_events
-    for the given correlation_request_id.
+    Deterministically build a PD execution from telemetry.
 
-    Store contract is authoritative.
+    Rules:
+    - Telemetry = facts
+    - Execution = interpretation
+    - Findings = escalation
     """
 
     logger.info(
@@ -32,7 +34,7 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
     cur = conn.cursor()
 
     # ---------------------------------------------------------
-    # Pull telemetry
+    # Pull PD telemetry
     # ---------------------------------------------------------
     cur.execute(
         """
@@ -40,9 +42,11 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
             event_id,
             timestamp_utc,
             event_layer,
+            status,
             pd_response_code,
             pd_error_code,
-            status,
+            cert_status,
+            cert_thumbprint,
             source_channel_id,
             source_environment
         FROM telemetry_events
@@ -54,77 +58,72 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
     )
 
     rows = cur.fetchall()
-
     if not rows:
-        logger.warning(
-            "PD_EXECUTION_MATERIALIZATION_SKIPPED",
-            extra={
-                "requestId": request_id,
-                "reason": "no_telemetry",
-            },
-        )
         conn.close()
         return
 
     first = rows[0]
     last = rows[-1]
 
-    # ---------------------------------------------------------
-    # Derive execution facts
-    # ---------------------------------------------------------
     started_at = _parse_ts(first["timestamp_utc"])
     completed_at = _parse_ts(last["timestamp_utc"])
     duration_ms = int((completed_at - started_at).total_seconds() * 1000)
 
-    event_count = len(rows)
-
-    outcome = "failure"
-
+    transport_events = [r for r in rows if r["event_layer"] == "TRANSPORT"]
     application_events = [r for r in rows if r["event_layer"] == "APPLICATION"]
-    if application_events:
-        last_app = application_events[-1]
-        if last_app["pd_response_code"] == "SUCCESS":
-            outcome = "success"
 
+    # ---------------------------------------------------------
+    # Certificate facts (transport-only)
+    # ---------------------------------------------------------
     cert_status = "NOT_REPORTED"
     cert_thumbprint = None
-    failure_stage = "UNKNOWN"
-    root_cause = "UNKNOWN"
+
+    for ev in transport_events:
+        if ev["cert_status"]:
+            cert_status = ev["cert_status"]
+        if ev["cert_thumbprint"]:
+            cert_thumbprint = ev["cert_thumbprint"]
+
+    # ---------------------------------------------------------
+    # Outcome + Failure Stage + Root Cause
+    # ---------------------------------------------------------
+    outcome = "failure"  # must be lowercase
+    failure_stage = None
+    root_cause = None
     http_status = None
 
-    if outcome == "success":
-        http_status = 200
-    elif application_events:
+    if application_events:
         last_app = application_events[-1]
-        failure_stage = "APPLICATION"
         pd_response_code = last_app["pd_response_code"]
         pd_error_code = last_app["pd_error_code"]
 
-        if pd_response_code == "PNF":
-            root_cause = "PNF"
-            http_status = 400
-        elif pd_error_code:
-            root_cause = pd_error_code
-            http_status = 400 if pd_error_code == "MISSING_REQUIRED_ELEMENT" else 500
+        # PD semantics: no patient found is still a success
+        if pd_response_code in ("PNF", "NO_MATCH", "OK"):
+            outcome = "success"
+            http_status = 200
         else:
-            root_cause = "UNKNOWN"
+            outcome = "failure"
+            failure_stage = "APPLICATION"
+            root_cause = pd_error_code or pd_response_code or "UNKNOWN"
             http_status = 500
+
     elif transport_events:
         last_transport = transport_events[-1]
+        outcome = "failure"
         failure_stage = "TRANSPORT"
-        status = last_transport["status"]
-        if status == "TIMEOUT":
-            root_cause = "TIMEOUT"
-            http_status = 504
-        else:
-            root_cause = "UNKNOWN"
-            http_status = 500
-    else:
-        failure_stage = "UNKNOWN"
-        root_cause = "UNKNOWN"
-        http_status = 500
+        root_cause = last_transport["status"] or "UNKNOWN"
+        http_status = 504 if root_cause == "TIMEOUT" else 500
 
-    # ✅ STORE-CONTRACT-COMPLIANT UPSERT
+    # Security escalation (certs override stage if bad)
+    if cert_status in ("INVALID", "EXPIRED", "UNTRUSTED"):
+        outcome = "failure"
+        failure_stage = "SECURITY"
+        root_cause = f"CERT_{cert_status}"
+        http_status = 495  # TLS cert error (non-standard but common)
+
+    # ---------------------------------------------------------
+    # Persist execution
+    # ---------------------------------------------------------
     upsert_execution(
         request_id=request_id,
         event_id=last["event_id"],
@@ -132,20 +131,24 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
         completed_at=completed_at.isoformat().replace("+00:00", "Z"),
         duration_ms=duration_ms,
         outcome=outcome,
+        transaction_type="PD",
         source_channel_id=last["source_channel_id"],
         source_environment=last["source_environment"],
         source_oid=None,
         target_oid=None,
-        cert_status=None,
-        cert_thumbprint=None,
-        failure_stage=None,
-        root_cause=None,
-        http_status=None,
+        cert_status=cert_status,
+        cert_thumbprint=cert_thumbprint,
+        failure_stage=failure_stage,
+        root_cause=root_cause,
+        http_status=http_status,
     )
 
     conn.commit()
     conn.close()
 
+    # ---------------------------------------------------------
+    # Findings evaluation (may escalate cert / root cause)
+    # ---------------------------------------------------------
     execution = PDExecution(
         requestId=request_id,
         startedAt=started_at.isoformat().replace("+00:00", "Z"),
@@ -154,11 +157,11 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
         outcome=outcome,
         channelId=last["source_channel_id"],
         environment=last["source_environment"],
-        certStatus="UNKNOWN",
-        certThumbprint=None,
-        failureStage=None,
-        rootCause=None,
-        httpStatus=None,
+        certStatus=cert_status,
+        certThumbprint=cert_thumbprint,
+        failureStage=failure_stage,
+        rootCause=root_cause,
+        httpStatus=http_status,
     )
 
     evaluate_pd_execution(execution)
@@ -168,6 +171,7 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
         extra={
             "requestId": request_id,
             "outcome": outcome,
-            "eventCount": event_count,
+            "failureStage": failure_stage,
+            "certStatus": cert_status,
         },
     )

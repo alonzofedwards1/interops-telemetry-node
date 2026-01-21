@@ -43,7 +43,13 @@ def utc_now() -> str:
 # ------------------------------------------------------------
 # Insert a single telemetry event
 # ------------------------------------------------------------
-def insert_event(conn, *, correlation_request_id: str, **kwargs) -> None:
+def insert_event(
+    conn,
+    *,
+    correlation_request_id: str,
+    correlation_id: str,
+    **kwargs,
+) -> None:
     conn.execute(
         """
         INSERT INTO telemetry_events (
@@ -57,6 +63,7 @@ def insert_event(conn, *, correlation_request_id: str, **kwargs) -> None:
             source_channel_id,
             source_environment,
 
+            correlation_id,
             correlation_request_id,
 
             protocol_standard,
@@ -65,32 +72,46 @@ def insert_event(conn, *, correlation_request_id: str, **kwargs) -> None:
             status,
             duration_ms,
 
+            -- 🔐 transport-level cert facts (nullable)
+            cert_status,
+            cert_thumbprint,
+
             pd_response_code,
             pd_error_code,
             missing_required_elements,
 
             raw_payload
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             str(uuid.uuid4()),
-            "PD",
+
+            # MUST match materializer expectations
+            kwargs["event_type"],  # PD_REQUEST / PD_RESPONSE
+
             kwargs["event_layer"],
             kwargs["event_subtype"],
             utc_now(),
 
-            "demo-emr",
-            "pd-channel-01",
-            "prod",
+            # Chain of custody
+            "MIRTH",
+            "PD_Request_Outbound",
+            "PROD",
 
+            correlation_id,
             correlation_request_id,
 
-            "HL7",
+            # Protocol truth
+            "IHE",
             "ITI-55",
 
             kwargs.get("status"),
             kwargs.get("duration_ms"),
+
+            # 🔐 cert facts (transport only)
+            kwargs.get("cert_status"),
+            kwargs.get("cert_thumbprint"),
 
             kwargs.get("pd_response_code"),
             kwargs.get("pd_error_code"),
@@ -110,40 +131,62 @@ def insert_pd_telemetry_sequence(correlation_request_id: str) -> None:
         extra={"correlationRequestId": correlation_request_id},
     )
 
+    # Deterministic correlation_id for grouping
+    correlation_id = correlation_request_id
+
     conn = get_connection()
     try:
-        # 1️⃣ Transport request sent
+        # 1️⃣ PD REQUEST — transport ingress with TLS cert observed
         insert_event(
             conn,
             correlation_request_id=correlation_request_id,
+            correlation_id=correlation_id,
+            event_type="PD_REQUEST",
             event_layer="TRANSPORT",
-            event_subtype="request.sent",
+            event_subtype="INGEST_RECEIVED",
             status="SUCCESS",
             duration_ms=45,
+
+            # 🔐 CERTIFICATE FACTS (REALISTIC)
+            cert_status="VALID",
+            cert_thumbprint="3A:F9:12:44:9B:88:EE:01:AA:BC:91:FE:10:22:77:99",
+
+            raw_payload="<PRPA_IN201305UV02/>",
         )
 
-        # 2️⃣ Application response (failure: patient not found)
+        # 2️⃣ PD RESPONSE — application layer (NO_MATCH is still success)
         insert_event(
             conn,
             correlation_request_id=correlation_request_id,
+            correlation_id=correlation_id,
+            event_type="PD_RESPONSE",
             event_layer="APPLICATION",
-            event_subtype="response.received",
-            status="FAILURE",
+            event_subtype="RESPONSE_PARSED",
+            status="SUCCESS",
             duration_ms=420,
-            pd_response_code="PNF",
-            pd_error_code="PATIENT_NOT_FOUND",
+            pd_response_code="NO_MATCH",
+            pd_error_code=None,
             missing_required_elements=None,
-            raw_payload="<PatientDiscoveryResponse><PNF/></PatientDiscoveryResponse>",
+            raw_payload="""
+                <PRPA_IN201306UV02>
+                  <queryAck>
+                    <queryResponseCode code="NF"/>
+                  </queryAck>
+                </PRPA_IN201306UV02>
+            """.strip(),
         )
 
-        # 3️⃣ Transport response completed
+        # 3️⃣ PD RESPONSE — transport completion
         insert_event(
             conn,
             correlation_request_id=correlation_request_id,
+            correlation_id=correlation_id,
+            event_type="PD_RESPONSE",
             event_layer="TRANSPORT",
-            event_subtype="response.complete",
+            event_subtype="RESPONSE_COMPLETE",
             status="SUCCESS",
             duration_ms=30,
+            raw_payload="<HTTP 200 OK/>",
         )
 
         conn.commit()
@@ -157,17 +200,17 @@ def insert_pd_telemetry_sequence(correlation_request_id: str) -> None:
 def main() -> None:
     logger.info("TELEMETRY_FLOW_SEED_START")
 
-    correlation_request_id = f"pd-{uuid.uuid4()}"
+    correlation_request_id = f"urn:uuid:{uuid.uuid4()}"
 
     logger.info(
         "NEW_LOGICAL_PD_REQUEST",
         extra={"correlationRequestId": correlation_request_id},
     )
 
-    # 1️⃣ Seed telemetry
+    # 1️⃣ Seed telemetry only
     insert_pd_telemetry_sequence(correlation_request_id)
 
-    # 2️⃣ Materialize execution
+    # 2️⃣ Explicitly materialize execution
     logger.info(
         "MATERIALIZE_PD_EXECUTION",
         extra={"correlationRequestId": correlation_request_id},

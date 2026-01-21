@@ -7,6 +7,10 @@ from app.pd.models import PDExecution
 logger = logging.getLogger(__name__)
 
 
+# =========================================================
+# UPSERT PD EXECUTION
+# =========================================================
+
 def upsert_execution(
     *,
     request_id: str,
@@ -15,6 +19,7 @@ def upsert_execution(
     completed_at: str | None = None,
     duration_ms: int | None = None,
     outcome: str | None = None,
+    transaction_type: str = "PD",
     source_channel_id: str | None = None,
     source_environment: str | None = None,
     source_oid: str | None = None,
@@ -24,6 +29,7 @@ def upsert_execution(
     failure_stage: str | None = None,
     root_cause: str | None = None,
     http_status: int | None = None,
+    retry_count: int = 0,
 ) -> None:
     try:
         logger.info(
@@ -41,13 +47,11 @@ def upsert_execution(
                 completed_at,
                 duration_ms,
                 outcome,
+                transaction_type,
+
                 source_channel_id,
                 source_environment,
-                cert_status,
-                cert_thumbprint,
-                failure_stage,
-                root_cause,
-                http_status,
+
                 source_oid,
                 target_oid,
 
@@ -56,25 +60,22 @@ def upsert_execution(
                 failure_stage,
                 root_cause,
                 http_status,
-                retry_count,
 
+                retry_count,
                 first_event_id,
                 last_event_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(request_id) DO UPDATE SET
                 started_at = COALESCE(excluded.started_at, pd_executions.started_at),
                 completed_at = COALESCE(excluded.completed_at, pd_executions.completed_at),
                 duration_ms = COALESCE(excluded.duration_ms, pd_executions.duration_ms),
                 outcome = COALESCE(excluded.outcome, pd_executions.outcome),
+                transaction_type = COALESCE(excluded.transaction_type, pd_executions.transaction_type),
 
                 source_channel_id = COALESCE(excluded.source_channel_id, pd_executions.source_channel_id),
                 source_environment = COALESCE(excluded.source_environment, pd_executions.source_environment),
-                cert_status = COALESCE(excluded.cert_status, pd_executions.cert_status),
-                cert_thumbprint = COALESCE(excluded.cert_thumbprint, pd_executions.cert_thumbprint),
-                failure_stage = COALESCE(excluded.failure_stage, pd_executions.failure_stage),
-                root_cause = COALESCE(excluded.root_cause, pd_executions.root_cause),
-                http_status = COALESCE(excluded.http_status, pd_executions.http_status),
+
                 source_oid = COALESCE(excluded.source_oid, pd_executions.source_oid),
                 target_oid = COALESCE(excluded.target_oid, pd_executions.target_oid),
 
@@ -83,8 +84,8 @@ def upsert_execution(
                 failure_stage = COALESCE(excluded.failure_stage, pd_executions.failure_stage),
                 root_cause = COALESCE(excluded.root_cause, pd_executions.root_cause),
                 http_status = COALESCE(excluded.http_status, pd_executions.http_status),
-                retry_count = COALESCE(excluded.retry_count, pd_executions.retry_count),
 
+                retry_count = COALESCE(excluded.retry_count, pd_executions.retry_count),
                 last_event_id = excluded.last_event_id
             """,
             (
@@ -93,13 +94,11 @@ def upsert_execution(
                 completed_at,
                 duration_ms,
                 outcome,
+                transaction_type,
+
                 source_channel_id,
                 source_environment,
-                cert_status,
-                cert_thumbprint,
-                failure_stage,
-                root_cause,
-                http_status,
+
                 source_oid,
                 target_oid,
 
@@ -108,10 +107,10 @@ def upsert_execution(
                 failure_stage,
                 root_cause,
                 http_status,
-                retry_count,
 
-                event_id,
-                event_id,
+                retry_count,
+                event_id,   # first_event_id (set once)
+                event_id,   # last_event_id (always updated)
             ),
         )
 
@@ -125,11 +124,15 @@ def upsert_execution(
 
     except Exception:
         logger.exception(
-            "Failed to upsert PD execution",
+            "FAILED_TO_UPSERT_PD_EXECUTION",
             extra={"requestId": request_id, "eventId": event_id},
         )
         raise
 
+
+# =========================================================
+# CERT / FAILURE FIELD MANAGEMENT (USED BY FINDINGS)
+# =========================================================
 
 def get_execution_cert_fields(request_id: str) -> dict[str, object] | None:
     conn = get_connection()
@@ -232,6 +235,10 @@ def update_execution_cert_fields(
     finally:
         conn.close()
 
+
+# =========================================================
+# READ HELPERS (UI)
+# =========================================================
 
 def count_executions() -> int:
     conn = get_connection()
