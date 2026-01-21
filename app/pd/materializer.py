@@ -32,6 +32,9 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
     conn = get_connection()
     cur = conn.cursor()
 
+    # ---------------------------------------------------------
+    # Pull telemetry
+    # ---------------------------------------------------------
     cur.execute(
         """
         SELECT
@@ -54,7 +57,10 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
     if not rows:
         logger.warning(
             "PD_EXECUTION_MATERIALIZATION_SKIPPED",
-            extra={"requestId": request_id, "reason": "no_telemetry"},
+            extra={
+                "requestId": request_id,
+                "reason": "no_telemetry",
+            },
         )
         conn.close()
         return
@@ -62,6 +68,9 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
     first = rows[0]
     last = rows[-1]
 
+    # ---------------------------------------------------------
+    # Derive execution facts
+    # ---------------------------------------------------------
     started_at = _parse_ts(first["timestamp_utc"])
     completed_at = _parse_ts(last["timestamp_utc"])
     duration_ms = int((completed_at - started_at).total_seconds() * 1000)
@@ -76,13 +85,13 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
         last_app = application_events[-1]
         if last_app["pd_response_code"] == "SUCCESS":
             outcome = "success"
-        else:
-            outcome = "failure"
 
-    # ✅ STORE-CONTRACT-COMPLIANT UPSERT
+    # ---------------------------------------------------------
+    # Store-contract-compliant upsert
+    # ---------------------------------------------------------
     upsert_execution(
         request_id=request_id,
-        event_id=last["event_id"],  # REQUIRED by store
+        event_id=last["event_id"],
         started_at=started_at.isoformat().replace("+00:00", "Z"),
         completed_at=completed_at.isoformat().replace("+00:00", "Z"),
         duration_ms=duration_ms,
@@ -91,11 +100,15 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
         source_environment=last["source_environment"],
         source_oid=None,
         target_oid=None,
+        cert_status="UNKNOWN",  # ✅ until cert parsing exists
     )
 
     conn.commit()
     conn.close()
 
+    # ---------------------------------------------------------
+    # Evaluate findings (idempotent)
+    # ---------------------------------------------------------
     execution = PDExecution(
         requestId=request_id,
         startedAt=started_at.isoformat().replace("+00:00", "Z"),
