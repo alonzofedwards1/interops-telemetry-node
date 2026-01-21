@@ -84,17 +84,14 @@ def list_findings(
             f.created_at,
             f.updated_at,
 
-            f.related_oid,
-            org.id AS organization_id,
-            org.display_name AS organization_name
+            e.source_oid AS source_oid,
+            od.organization_name AS organization_name
 
         FROM findings f
+        JOIN pd_executions e
+            ON f.execution_id = e.request_id
         LEFT JOIN oid_directory od
-            ON od.oid = f.related_oid
-        LEFT JOIN organization_oids oo
-            ON oo.oid = od.oid
-        LEFT JOIN organizations org
-            ON org.id = oo.organization_id
+            ON e.source_oid = od.oid
 
         {where_sql}
         ORDER BY {sort} {order}
@@ -137,14 +134,14 @@ def get_finding_by_id(finding_id: str) -> dict[str, Any] | None:
             f.created_at,
             f.updated_at,
 
-            f.related_oid,
-            org.id AS organization_id,
-            org.display_name AS organization_name
+            e.source_oid AS source_oid,
+            od.organization_name AS organization_name
 
         FROM findings f
-        LEFT JOIN oid_directory od ON od.oid = f.related_oid
-        LEFT JOIN organization_oids oo ON oo.oid = od.oid
-        LEFT JOIN organizations org ON org.id = oo.organization_id
+        JOIN pd_executions e
+            ON f.execution_id = e.request_id
+        LEFT JOIN oid_directory od
+            ON e.source_oid = od.oid
         WHERE f.id = ?
     """
 
@@ -299,7 +296,6 @@ def add_or_update_finding(
     summary: str,
     technical_detail: str | None,
     recommended_action: str | None,
-    related_oid: str | None = None,
     status: str = "open",
 ) -> None:
     now = _utc_now()
@@ -317,13 +313,12 @@ def add_or_update_finding(
                 summary,
                 technical_detail,
                 recommended_action,
-                related_oid,
                 status,
                 first_seen_at,
                 last_seen_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 execution_id = excluded.execution_id,
                 execution_type = excluded.execution_type,
@@ -332,7 +327,6 @@ def add_or_update_finding(
                 summary = excluded.summary,
                 technical_detail = COALESCE(excluded.technical_detail, findings.technical_detail),
                 recommended_action = COALESCE(excluded.recommended_action, findings.recommended_action),
-                related_oid = excluded.related_oid,
                 status = excluded.status,
                 last_seen_at = excluded.last_seen_at,
                 updated_at = excluded.updated_at
@@ -346,7 +340,6 @@ def add_or_update_finding(
                 summary,
                 technical_detail,
                 recommended_action,
-                related_oid,
                 status,
                 now,
                 now,

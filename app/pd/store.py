@@ -395,12 +395,16 @@ def list_executions(limit: int = 500) -> List[PDExecution]:
             outcome,
             source_channel_id,
             source_environment,
+            source_oid,
+            od.organization_name AS source_org_name,
             cert_status,
             cert_thumbprint,
             failure_stage,
             root_cause,
             http_status
         FROM pd_executions
+        LEFT JOIN oid_directory od
+            ON pd_executions.source_oid = od.oid
         ORDER BY completed_at DESC
         LIMIT ?
         """,
@@ -417,6 +421,12 @@ def list_executions(limit: int = 500) -> List[PDExecution]:
             outcome=row["outcome"],
             channelId=row["source_channel_id"],
             environment=row["source_environment"],
+            sourceOid=row["source_oid"],
+            sourceOrganizationName=(
+                "—"
+                if not row["source_oid"]
+                else row["source_org_name"] or "Unrecognized Organization"
+            ),
             certStatus=row["cert_status"] or "NOT_REPORTED",
             certThumbprint=row["cert_thumbprint"],
             failureStage=row["failure_stage"],
