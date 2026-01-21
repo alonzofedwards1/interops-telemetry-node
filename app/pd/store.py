@@ -19,6 +19,11 @@ def upsert_execution(
     source_environment: str | None = None,
     source_oid: str | None = None,
     target_oid: str | None = None,
+    cert_status: str,
+    cert_thumbprint: str | None,
+    failure_stage: str | None,
+    root_cause: str | None,
+    http_status: int | None,
 ) -> None:
     try:
         logger.info(
@@ -38,12 +43,17 @@ def upsert_execution(
                 outcome,
                 source_channel_id,
                 source_environment,
+                cert_status,
+                cert_thumbprint,
+                failure_stage,
+                root_cause,
+                http_status,
                 source_oid,
                 target_oid,
                 first_event_id,
                 last_event_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(request_id) DO UPDATE SET
                 started_at = CASE
                     WHEN pd_executions.started_at IS NULL THEN excluded.started_at
@@ -56,6 +66,11 @@ def upsert_execution(
                 outcome = COALESCE(excluded.outcome, pd_executions.outcome),
                 source_channel_id = COALESCE(excluded.source_channel_id, pd_executions.source_channel_id),
                 source_environment = COALESCE(excluded.source_environment, pd_executions.source_environment),
+                cert_status = COALESCE(excluded.cert_status, pd_executions.cert_status),
+                cert_thumbprint = COALESCE(excluded.cert_thumbprint, pd_executions.cert_thumbprint),
+                failure_stage = COALESCE(excluded.failure_stage, pd_executions.failure_stage),
+                root_cause = COALESCE(excluded.root_cause, pd_executions.root_cause),
+                http_status = COALESCE(excluded.http_status, pd_executions.http_status),
                 source_oid = COALESCE(excluded.source_oid, pd_executions.source_oid),
                 target_oid = COALESCE(excluded.target_oid, pd_executions.target_oid),
                 last_event_id = excluded.last_event_id
@@ -68,6 +83,11 @@ def upsert_execution(
                 outcome,
                 source_channel_id,
                 source_environment,
+                cert_status,
+                cert_thumbprint,
+                failure_stage,
+                root_cause,
+                http_status,
                 source_oid,
                 target_oid,
                 event_id,
@@ -121,7 +141,12 @@ def list_executions(limit: int = 500) -> List[PDExecution]:
             duration_ms,
             outcome,
             source_channel_id,
-            source_environment
+            source_environment,
+            cert_status,
+            cert_thumbprint,
+            failure_stage,
+            root_cause,
+            http_status
         FROM pd_executions
         ORDER BY completed_at DESC
         LIMIT ?
@@ -139,6 +164,11 @@ def list_executions(limit: int = 500) -> List[PDExecution]:
             outcome=row["outcome"],
             channelId=row["source_channel_id"],
             environment=row["source_environment"],
+            certStatus=row["cert_status"] or "NOT_REPORTED",
+            certThumbprint=row["cert_thumbprint"],
+            failureStage=row["failure_stage"] or "UNKNOWN",
+            rootCause=row["root_cause"] or "UNKNOWN",
+            httpStatus=row["http_status"],
         )
         for row in rows
     ]

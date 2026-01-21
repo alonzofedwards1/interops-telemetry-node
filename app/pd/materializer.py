@@ -1,8 +1,9 @@
 import logging
 from datetime import datetime
-from typing import Optional
 
 from app.db.connection import get_connection
+from app.findings.evaluator import evaluate_pd_execution
+from app.pd.models import PDExecution
 from app.pd.store import upsert_execution
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,8 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
             timestamp_utc,
             event_layer,
             pd_response_code,
+            pd_error_code,
+            status,
             source_channel_id,
             source_environment
         FROM telemetry_events
@@ -69,6 +72,7 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
     outcome = "failure"
 
     application_events = [r for r in rows if r["event_layer"] == "APPLICATION"]
+    transport_events = [r for r in rows if r["event_layer"] == "TRANSPORT"]
 
     if application_events:
         last_app = application_events[-1]
@@ -76,6 +80,44 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
             outcome = "success"
         else:
             outcome = "failure"
+
+    cert_status = "NOT_REPORTED"
+    cert_thumbprint = None
+    failure_stage = "UNKNOWN"
+    root_cause = "UNKNOWN"
+    http_status = None
+
+    if outcome == "success":
+        http_status = 200
+    elif application_events:
+        last_app = application_events[-1]
+        failure_stage = "APPLICATION"
+        pd_response_code = last_app["pd_response_code"]
+        pd_error_code = last_app["pd_error_code"]
+
+        if pd_response_code == "PNF":
+            root_cause = "PNF"
+            http_status = 400
+        elif pd_error_code:
+            root_cause = pd_error_code
+            http_status = 400 if pd_error_code == "MISSING_REQUIRED_ELEMENT" else 500
+        else:
+            root_cause = "UNKNOWN"
+            http_status = 500
+    elif transport_events:
+        last_transport = transport_events[-1]
+        failure_stage = "TRANSPORT"
+        status = last_transport["status"]
+        if status == "TIMEOUT":
+            root_cause = "TIMEOUT"
+            http_status = 504
+        else:
+            root_cause = "UNKNOWN"
+            http_status = 500
+    else:
+        failure_stage = "UNKNOWN"
+        root_cause = "UNKNOWN"
+        http_status = 500
 
     # ✅ STORE-CONTRACT-COMPLIANT UPSERT
     upsert_execution(
@@ -89,10 +131,32 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
         source_environment=last["source_environment"],
         source_oid=None,
         target_oid=None,
+        cert_status=cert_status,
+        cert_thumbprint=cert_thumbprint,
+        failure_stage=failure_stage,
+        root_cause=root_cause,
+        http_status=http_status,
     )
 
     conn.commit()
     conn.close()
+
+    execution = PDExecution(
+        requestId=request_id,
+        startedAt=started_at.isoformat().replace("+00:00", "Z"),
+        completedAt=completed_at.isoformat().replace("+00:00", "Z"),
+        executionTimeMs=duration_ms,
+        outcome=outcome,
+        channelId=last["source_channel_id"],
+        environment=last["source_environment"],
+        certStatus=cert_status,
+        certThumbprint=cert_thumbprint,
+        failureStage=failure_stage,
+        rootCause=root_cause,
+        httpStatus=http_status,
+    )
+
+    evaluate_pd_execution(execution)
 
     logger.info(
         "PD_EXECUTION_MATERIALIZATION_COMPLETE",
