@@ -31,6 +31,9 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
     conn = get_connection()
     cur = conn.cursor()
 
+    # ---------------------------------------------------------
+    # Pull telemetry
+    # ---------------------------------------------------------
     cur.execute(
         """
         SELECT
@@ -38,6 +41,8 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
             timestamp_utc,
             event_layer,
             pd_response_code,
+            pd_error_code,
+            status,
             source_channel_id,
             source_environment
         FROM telemetry_events
@@ -53,7 +58,10 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
     if not rows:
         logger.warning(
             "PD_EXECUTION_MATERIALIZATION_SKIPPED",
-            extra={"requestId": request_id, "reason": "no_telemetry"},
+            extra={
+                "requestId": request_id,
+                "reason": "no_telemetry",
+            },
         )
         conn.close()
         return
@@ -61,6 +69,9 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
     first = rows[0]
     last = rows[-1]
 
+    # ---------------------------------------------------------
+    # Derive execution facts
+    # ---------------------------------------------------------
     started_at = _parse_ts(first["timestamp_utc"])
     completed_at = _parse_ts(last["timestamp_utc"])
     duration_ms = int((completed_at - started_at).total_seconds() * 1000)
@@ -74,13 +85,49 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
         last_app = application_events[-1]
         if last_app["pd_response_code"] == "SUCCESS":
             outcome = "success"
+
+    cert_status = "NOT_REPORTED"
+    cert_thumbprint = None
+    failure_stage = "UNKNOWN"
+    root_cause = "UNKNOWN"
+    http_status = None
+
+    if outcome == "success":
+        http_status = 200
+    elif application_events:
+        last_app = application_events[-1]
+        failure_stage = "APPLICATION"
+        pd_response_code = last_app["pd_response_code"]
+        pd_error_code = last_app["pd_error_code"]
+
+        if pd_response_code == "PNF":
+            root_cause = "PNF"
+            http_status = 400
+        elif pd_error_code:
+            root_cause = pd_error_code
+            http_status = 400 if pd_error_code == "MISSING_REQUIRED_ELEMENT" else 500
         else:
-            outcome = "failure"
+            root_cause = "UNKNOWN"
+            http_status = 500
+    elif transport_events:
+        last_transport = transport_events[-1]
+        failure_stage = "TRANSPORT"
+        status = last_transport["status"]
+        if status == "TIMEOUT":
+            root_cause = "TIMEOUT"
+            http_status = 504
+        else:
+            root_cause = "UNKNOWN"
+            http_status = 500
+    else:
+        failure_stage = "UNKNOWN"
+        root_cause = "UNKNOWN"
+        http_status = 500
 
     # ✅ STORE-CONTRACT-COMPLIANT UPSERT
     upsert_execution(
         request_id=request_id,
-        event_id=last["event_id"],  # REQUIRED by store
+        event_id=last["event_id"],
         started_at=started_at.isoformat().replace("+00:00", "Z"),
         completed_at=completed_at.isoformat().replace("+00:00", "Z"),
         duration_ms=duration_ms,
