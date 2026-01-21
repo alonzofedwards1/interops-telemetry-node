@@ -79,10 +79,12 @@ def _derive_failure_metadata(
 
 def materialize_execution_from_telemetry(request_id: str) -> None:
     """
-    Deterministically builds or updates a PD execution from telemetry_events
-    for the given correlation_request_id.
+    Deterministically build a PD execution from telemetry.
 
-    Store contract is authoritative.
+    Rules:
+    - Telemetry = facts
+    - Execution = interpretation
+    - Findings = escalation
     """
 
     logger.info(
@@ -93,12 +95,16 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
     conn = get_connection()
     cur = conn.cursor()
 
+    # ---------------------------------------------------------
+    # Pull PD telemetry
+    # ---------------------------------------------------------
     cur.execute(
         """
         SELECT
             event_id,
             timestamp_utc,
             event_layer,
+            status,
             pd_response_code,
             status,
             source_channel_id,
@@ -114,12 +120,7 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
     )
 
     rows = cur.fetchall()
-
     if not rows:
-        logger.warning(
-            "PD_EXECUTION_MATERIALIZATION_SKIPPED",
-            extra={"requestId": request_id, "reason": "no_telemetry"},
-        )
         conn.close()
         return
 
@@ -130,15 +131,17 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
     completed_at = _parse_ts(last["timestamp_utc"])
     duration_ms = int((completed_at - started_at).total_seconds() * 1000)
 
-    event_count = len(rows)
-
-    outcome = "failure"
-
+    transport_events = [r for r in rows if r["event_layer"] == "TRANSPORT"]
     application_events = [r for r in rows if r["event_layer"] == "APPLICATION"]
     if application_events:
         last_app = application_events[-1]
-        if last_app["pd_response_code"] == "SUCCESS":
+        pd_response_code = last_app["pd_response_code"]
+        pd_error_code = last_app["pd_error_code"]
+
+        # PD semantics: no patient found is still a success
+        if pd_response_code in ("PNF", "NO_MATCH", "OK"):
             outcome = "success"
+            http_status = 200
         else:
             outcome = "failure"
 
@@ -155,11 +158,12 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
     # ✅ STORE-CONTRACT-COMPLIANT UPSERT
     upsert_execution(
         request_id=request_id,
-        event_id=last["event_id"],  # REQUIRED by store
+        event_id=last["event_id"],
         started_at=started_at.isoformat().replace("+00:00", "Z"),
         completed_at=completed_at.isoformat().replace("+00:00", "Z"),
         duration_ms=duration_ms,
         outcome=outcome,
+        transaction_type="PD",
         source_channel_id=last["source_channel_id"],
         source_environment=last["source_environment"],
         source_oid=None,
@@ -196,6 +200,7 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
         extra={
             "requestId": request_id,
             "outcome": outcome,
-            "eventCount": event_count,
+            "failureStage": failure_stage,
+            "certStatus": cert_status,
         },
     )

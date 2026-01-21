@@ -1,5 +1,3 @@
-# app/pd/materialization_trigger.py
-
 import logging
 from app.telemetry.models import TelemetryEvent
 from app.pd.materializer import materialize_execution_from_telemetry
@@ -11,16 +9,8 @@ def materialize_pd_execution(event: TelemetryEvent) -> None:
     """
     Trigger hook for PD execution materialization.
 
-    Responsibilities:
-    - Inspect a single telemetry event
-    - Decide whether it is eligible to trigger execution materialization
-    - Delegate execution building to the PD materializer
-
-    MUST NOT:
-    - Write to the database
-    - Infer duration or outcome
-    - Build executions
-    - Emit findings
+    PD is a TRANSACTION TYPE.
+    PD_REQUEST / PD_RESPONSE are EVENT TYPES.
     """
 
     try:
@@ -35,20 +25,18 @@ def materialize_pd_execution(event: TelemetryEvent) -> None:
             },
         )
 
-        # Only PD telemetry
-        if event.eventType != "PD":
+        # Only PD-related telemetry
+        if event.eventType not in ("PD_REQUEST", "PD_RESPONSE"):
             return
 
         # Must have correlation_request_id
         if not event.correlation or not event.correlation.requestId:
             return
 
-        # Only trigger on terminal-ish APPLICATION events
-        # Transport-only events are insufficient to finalize an execution
+        # Only APPLICATION events can finalize a PD execution
         if event.eventLayer != "APPLICATION":
             return
 
-        # Delegate to grouped materializer
         materialize_execution_from_telemetry(
             request_id=event.correlation.requestId
         )
