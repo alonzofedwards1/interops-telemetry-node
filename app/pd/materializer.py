@@ -3,6 +3,8 @@ from datetime import datetime
 from typing import Optional
 
 from app.db.connection import get_connection
+from app.findings.evaluator import evaluate_pd_execution
+from app.pd.models import PDExecution
 from app.pd.store import upsert_execution
 
 logger = logging.getLogger(__name__)
@@ -93,6 +95,18 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
 
     conn.commit()
     conn.close()
+
+    execution = PDExecution(
+        requestId=request_id,
+        startedAt=started_at.isoformat().replace("+00:00", "Z"),
+        completedAt=completed_at.isoformat().replace("+00:00", "Z"),
+        executionTimeMs=duration_ms,
+        outcome=outcome,
+        channelId=last["source_channel_id"],
+        environment=last["source_environment"],
+    )
+
+    evaluate_pd_execution(execution)
 
     logger.info(
         "PD_EXECUTION_MATERIALIZATION_COMPLETE",
