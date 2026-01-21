@@ -1,8 +1,9 @@
 import logging
 from datetime import datetime
-from typing import Optional
 
 from app.db.connection import get_connection
+from app.findings.evaluator import evaluate_pd_execution
+from app.pd.models import PDExecution
 from app.pd.store import upsert_execution
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,6 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
     outcome = "failure"
 
     application_events = [r for r in rows if r["event_layer"] == "APPLICATION"]
-
     if application_events:
         last_app = application_events[-1]
         if last_app["pd_response_code"] == "SUCCESS":
@@ -89,10 +89,32 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
         source_environment=last["source_environment"],
         source_oid=None,
         target_oid=None,
+        cert_status=None,
+        cert_thumbprint=None,
+        failure_stage=None,
+        root_cause=None,
+        http_status=None,
     )
 
     conn.commit()
     conn.close()
+
+    execution = PDExecution(
+        requestId=request_id,
+        startedAt=started_at.isoformat().replace("+00:00", "Z"),
+        completedAt=completed_at.isoformat().replace("+00:00", "Z"),
+        executionTimeMs=duration_ms,
+        outcome=outcome,
+        channelId=last["source_channel_id"],
+        environment=last["source_environment"],
+        certStatus="UNKNOWN",
+        certThumbprint=None,
+        failureStage=None,
+        rootCause=None,
+        httpStatus=None,
+    )
+
+    evaluate_pd_execution(execution)
 
     logger.info(
         "PD_EXECUTION_MATERIALIZATION_COMPLETE",
