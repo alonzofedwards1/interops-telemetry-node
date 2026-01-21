@@ -160,6 +160,83 @@ def get_finding_by_id(finding_id: str) -> dict[str, Any] | None:
 
 
 # ============================================================
+# FINDING ID RESOLUTION
+# ============================================================
+
+def find_finding_ids_by_signature(
+    *,
+    execution_id: str | None,
+    execution_type: str,
+    severity: str,
+    category: str,
+    summary: str,
+) -> list[str]:
+    if execution_id is None:
+        return []
+
+    query = """
+        SELECT id
+        FROM findings
+        WHERE execution_id = ?
+          AND execution_type = ?
+          AND severity = ?
+          AND category = ?
+          AND summary = ?
+        ORDER BY created_at ASC
+    """
+
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            query,
+            (execution_id, execution_type, severity, category, summary),
+        ).fetchall()
+        return [row["id"] for row in rows]
+    except Exception:
+        logger.exception("Failed find_finding_ids_by_signature query")
+        raise
+    finally:
+        conn.close()
+
+
+def replace_finding_id(*, current_id: str, new_id: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            UPDATE findings
+            SET id = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (new_id, _utc_now(), current_id),
+        )
+        conn.commit()
+    except Exception:
+        logger.exception("Failed replace_finding_id query")
+        raise
+    finally:
+        conn.close()
+
+
+def delete_finding_by_id(finding_id: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            DELETE FROM findings
+            WHERE id = ?
+            """,
+            (finding_id,),
+        )
+        conn.commit()
+    except Exception:
+        logger.exception("Failed delete_finding_by_id query")
+        raise
+    finally:
+        conn.close()
+
+
+# ============================================================
 # COUNTS (AUTHORITATIVE INVENTORY)
 # ============================================================
 
