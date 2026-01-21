@@ -32,6 +32,12 @@ async def ingest_event(payload: dict = Body(...), user_id: int = Depends(require
     event: TelemetryEvent | None = None
     try:
         event = validate_event_payload(payload)
+        event_layer = payload.get("eventLayer") or payload.get("event_layer")
+        cert_status = None
+        cert_thumbprint = None
+        if event_layer == "TRANSPORT":
+            cert_status = payload.get("certStatus") or payload.get("cert_status")
+            cert_thumbprint = payload.get("certThumbprint") or payload.get("cert_thumbprint")
 
         logger.info(
             "INGEST_RECEIVED",
@@ -49,27 +55,31 @@ async def ingest_event(payload: dict = Body(...), user_id: int = Depends(require
             INSERT INTO telemetry_events (
                 event_id,
                 event_type,
+                event_layer,
                 timestamp_utc,
                 source_channel_id,
                 source_environment,
                 status,
                 duration_ms,
                 correlation_request_id,
-                source_oid,
-                target_oid,
+                cert_status,
+                cert_thumbprint,
                 raw_payload
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload.get("eventId"),
                 payload.get("eventType"),
+                event_layer,
                 payload.get("timestamp"),
                 event.source.channelId if event.source else None,
                 event.source.environment if event.source else None,
                 event.outcome.status if event.outcome else None,
                 event.outcome.durationMs if event.outcome else None,
                 event.correlation.requestId if event.correlation else None,
+                cert_status,
+                cert_thumbprint,
                 json.dumps(payload),
             ),
         )

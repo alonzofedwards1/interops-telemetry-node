@@ -10,12 +10,15 @@ TELEMETRY_EVENTS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS telemetry_events (
     event_id TEXT PRIMARY KEY,
     event_type TEXT NOT NULL,
+    event_layer TEXT,
     timestamp_utc TEXT NOT NULL,
     source_channel_id TEXT,
     source_environment TEXT,
     status TEXT,
     duration_ms INTEGER,
     correlation_request_id TEXT,
+    cert_status TEXT,
+    cert_thumbprint TEXT,
     raw_payload TEXT
 );
 """
@@ -30,6 +33,11 @@ CREATE TABLE IF NOT EXISTS pd_executions (
     outcome TEXT,
     source_channel_id TEXT,
     source_environment TEXT,
+    cert_status TEXT DEFAULT 'NOT_REPORTED',
+    cert_thumbprint TEXT,
+    failure_stage TEXT,
+    root_cause TEXT,
+    http_status INTEGER,
     first_event_id TEXT,
     last_event_id TEXT
 );

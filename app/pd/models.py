@@ -9,6 +9,11 @@ class PDExecution(BaseModel):
     outcome: str = Field(..., description="Execution outcome")
     channelId: str | None = Field(None, description="Source channel identifier")
     environment: str | None = Field(None, description="Source environment")
+    certStatus: str = Field(..., description="Certificate validation status")
+    certThumbprint: str | None = Field(None, description="Certificate thumbprint")
+    failureStage: str | None = Field(None, description="Failure stage classification")
+    rootCause: str | None = Field(None, description="Root cause classification")
+    httpStatus: int | None = Field(None, description="HTTP status code")
 
     model_config = ConfigDict(
         populate_by_name=True,
