@@ -1,13 +1,13 @@
-import uuid
-
 from app.findings.models import FindingCreate
 from app.findings.rules.base import FindingRule
 from app.findings.rules.registry import register
+from app.findings.utils import deterministic_finding_id
 from app.pd.models import PDExecution
 
 
 class PdLatencyRule(FindingRule):
     id = "PD_LATENCY"
+    version = "v1"
     name = "PD Latency Threshold"
     category = "Latency"
     severity = "warning"
@@ -21,9 +21,15 @@ class PdLatencyRule(FindingRule):
         if execution.executionTimeMs <= self.THRESHOLD_MS:
             return []
 
+        finding_id = deterministic_finding_id(
+            rule_id=self.id,
+            rule_version=self.version,
+            execution_id=execution.requestId,
+        )
+
         return [
             FindingCreate(
-                id=str(uuid.uuid4()),
+                id=finding_id,
                 executionId=execution.requestId,
                 executionType="PD",
                 severity=self.severity,

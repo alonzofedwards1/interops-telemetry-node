@@ -7,6 +7,7 @@ from app.pd.models import PDExecution
 
 class FindingRule(ABC):
     id: str
+    version: str = "v1"
     name: str
     category: str
     severity: str
