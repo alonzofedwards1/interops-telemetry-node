@@ -31,13 +31,17 @@ CREATE TABLE IF NOT EXISTS pd_executions (
     completed_at TEXT,
     duration_ms INTEGER,
     outcome TEXT,
+    transaction_type TEXT,
     source_channel_id TEXT,
     source_environment TEXT,
+    source_oid TEXT,
+    target_oid TEXT,
     cert_status TEXT DEFAULT 'NOT_REPORTED',
     cert_thumbprint TEXT,
     failure_stage TEXT,
     root_cause TEXT,
     http_status INTEGER,
+    retry_count INTEGER,
     first_event_id TEXT,
     last_event_id TEXT
 );

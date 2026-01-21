@@ -1,8 +1,11 @@
+import json
 import logging
+import xml.etree.ElementTree as ElementTree
 from datetime import datetime
 
 from app.db.connection import get_connection
 from app.findings.evaluator import evaluate_pd_execution
+from app.oids.repository import register_observed_oid
 from app.pd.models import PDExecution
 from app.pd.store import upsert_execution
 
@@ -77,6 +80,71 @@ def _derive_failure_metadata(
     return None, None, None
 
 
+def _extract_xml_from_payload(raw_payload: str | None) -> str | None:
+    if not raw_payload:
+        return None
+    raw_payload = raw_payload.strip()
+    if not raw_payload:
+        return None
+    if raw_payload.startswith("<"):
+        return raw_payload
+    try:
+        parsed = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        return None
+
+    def _find_xml(value: object) -> str | None:
+        if isinstance(value, str):
+            candidate = value.strip()
+            if candidate.startswith("<") and ">" in candidate:
+                return candidate
+        if isinstance(value, dict):
+            for item in value.values():
+                found = _find_xml(item)
+                if found:
+                    return found
+        if isinstance(value, list):
+            for item in value:
+                found = _find_xml(item)
+                if found:
+                    return found
+        return None
+
+    return _find_xml(parsed)
+
+
+def _extract_oids_from_xml(xml_payload: str | None) -> tuple[str | None, str | None]:
+    if not xml_payload:
+        return None, None
+    try:
+        root = ElementTree.fromstring(xml_payload)
+    except ElementTree.ParseError:
+        return None, None
+
+    def _find_device_oid(role: str) -> str | None:
+        for node in root.iter():
+            if not node.tag.endswith(role):
+                continue
+            device_id = node.find(".//{*}device/{*}id")
+            if device_id is None:
+                continue
+            oid = device_id.attrib.get("root")
+            if oid:
+                return oid
+        return None
+
+    return _find_device_oid("sender"), _find_device_oid("receiver")
+
+
+def _register_oid_safe(oid: str | None) -> None:
+    if not oid:
+        return
+    try:
+        register_observed_oid(oid, None)
+    except Exception:
+        logger.exception("Failed to register observed OID", extra={"oid": oid})
+
+
 def materialize_execution_from_telemetry(request_id: str) -> None:
     """
     Deterministically build a PD execution from telemetry.
@@ -106,11 +174,12 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
             event_layer,
             status,
             pd_response_code,
-            status,
+            pd_error_code,
             source_channel_id,
             source_environment,
             cert_status,
-            cert_thumbprint
+            cert_thumbprint,
+            raw_payload
         FROM telemetry_events
         WHERE correlation_request_id = ?
           AND event_type = 'PD'
@@ -133,6 +202,14 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
 
     transport_events = [r for r in rows if r["event_layer"] == "TRANSPORT"]
     application_events = [r for r in rows if r["event_layer"] == "APPLICATION"]
+    source_oid = None
+    target_oid = None
+    for event in application_events:
+        xml_payload = _extract_xml_from_payload(event["raw_payload"])
+        source_oid, target_oid = _extract_oids_from_xml(xml_payload)
+        if source_oid or target_oid:
+            break
+
     if application_events:
         last_app = application_events[-1]
         pd_response_code = last_app["pd_response_code"]
@@ -155,6 +232,18 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
         application_events=application_events,
     )
 
+    logger.info(
+        "OID_ASSIGNMENT",
+        extra={
+            "requestId": request_id,
+            "sourceOid": source_oid,
+            "targetOid": target_oid,
+        },
+    )
+
+    _register_oid_safe(source_oid)
+    _register_oid_safe(target_oid)
+
     # ✅ STORE-CONTRACT-COMPLIANT UPSERT
     upsert_execution(
         request_id=request_id,
@@ -166,8 +255,8 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
         transaction_type="PD",
         source_channel_id=last["source_channel_id"],
         source_environment=last["source_environment"],
-        source_oid=None,
-        target_oid=None,
+        source_oid=source_oid,
+        target_oid=target_oid,
         cert_status=cert_status,
         cert_thumbprint=cert_thumbprint,
         failure_stage=failure_stage,
@@ -186,6 +275,7 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
         outcome=outcome,
         channelId=last["source_channel_id"],
         environment=last["source_environment"],
+        sourceOid=source_oid,
         certStatus=cert_status,
         certThumbprint=cert_thumbprint,
         failureStage=failure_stage,

@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+def _resolve_org_name(source_oid: str | None, org_name: str | None) -> str | None:
+    if not source_oid:
+        return "—"
+    return org_name or "Unrecognized Organization"
+
+
 # ============================================================
 # GET /findings
 # ============================================================
@@ -72,14 +78,10 @@ async def get_findings(
                 technicalDetail=row.get("technical_detail"),
                 recommendedAction=row.get("recommended_action"),
                 status=row["status"],
-                relatedOid=row.get("related_oid"),
-                organization=(
-                    {
-                        "id": row["organization_id"],
-                        "name": row["organization_name"],
-                    }
-                    if row.get("organization_id")
-                    else None
+                relatedOid=row.get("source_oid"),
+                organization=_resolve_org_name(
+                    row.get("source_oid"),
+                    row.get("organization_name"),
                 ),
                 firstSeenAt=row.get("first_seen_at"),
                 lastSeenAt=row.get("last_seen_at"),
@@ -142,14 +144,10 @@ async def get_finding(finding_id: str):
             technicalDetail=row.get("technical_detail"),
             recommendedAction=row.get("recommended_action"),
             status=row["status"],
-            relatedOid=row.get("related_oid"),
-            organization=(
-                {
-                    "id": row["organization_id"],
-                    "name": row["organization_name"],
-                }
-                if row.get("organization_id")
-                else None
+            relatedOid=row.get("source_oid"),
+            organization=_resolve_org_name(
+                row.get("source_oid"),
+                row.get("organization_name"),
             ),
             firstSeenAt=row.get("first_seen_at"),
             lastSeenAt=row.get("last_seen_at"),
@@ -189,14 +187,10 @@ async def update_status(finding_id: str, payload: FindingStatusUpdate):
             technicalDetail=row.get("technical_detail"),
             recommendedAction=row.get("recommended_action"),
             status=row["status"],
-            relatedOid=row.get("related_oid"),
-            organization=(
-                {
-                    "id": row["organization_id"],
-                    "name": row["organization_name"],
-                }
-                if row.get("organization_id")
-                else None
+            relatedOid=row.get("source_oid"),
+            organization=_resolve_org_name(
+                row.get("source_oid"),
+                row.get("organization_name"),
             ),
             firstSeenAt=row.get("first_seen_at"),
             lastSeenAt=row.get("last_seen_at"),

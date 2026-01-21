@@ -9,6 +9,10 @@ class PDExecution(BaseModel):
     outcome: str = Field(..., description="Execution outcome")
     channelId: str | None = Field(None, description="Source channel identifier")
     environment: str | None = Field(None, description="Source environment")
+    sourceOid: str | None = Field(None, description="Source organization OID")
+    sourceOrganizationName: str | None = Field(
+        None, description="Resolved source organization name"
+    )
     certStatus: str = Field(..., description="Certificate validation status")
     certThumbprint: str | None = Field(None, description="Certificate thumbprint")
     failureStage: str | None = Field(None, description="Failure stage classification")
