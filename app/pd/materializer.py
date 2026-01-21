@@ -15,6 +15,68 @@ def _parse_ts(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
+def _select_cert_status(transport_events: list[dict]) -> str:
+    cert_rank = {
+        "NOT_REPORTED": 0,
+        "VALID": 1,
+        "INVALID": 2,
+        "EXPIRED": 2,
+        "UNTRUSTED": 2,
+    }
+    statuses = [event.get("cert_status") for event in transport_events if event.get("cert_status")]
+    if not statuses:
+        return "NOT_REPORTED"
+
+    selected = statuses[0]
+    highest_rank = cert_rank.get(selected, 0)
+    for status in statuses[1:]:
+        rank = cert_rank.get(status, 0)
+        if rank > highest_rank:
+            selected = status
+            highest_rank = rank
+    return selected
+
+
+def _select_cert_thumbprint(transport_events: list[dict]) -> str | None:
+    for event in transport_events:
+        thumbprint = event.get("cert_thumbprint")
+        if thumbprint:
+            return thumbprint
+    return None
+
+
+def _derive_failure_metadata(
+    *,
+    cert_status: str,
+    outcome: str,
+    transport_events: list[dict],
+    application_events: list[dict],
+) -> tuple[str | None, str | None, int | None]:
+    if cert_status in ("INVALID", "EXPIRED", "UNTRUSTED"):
+        root_cause_map = {
+            "INVALID": "CERT_INVALID",
+            "EXPIRED": "CERT_EXPIRED",
+            "UNTRUSTED": "TRUST_ANCHOR",
+        }
+        return "SECURITY", root_cause_map[cert_status], None
+
+    if any(event.get("status") == "TIMEOUT" for event in transport_events):
+        return "TRANSPORT", "TIMEOUT", 504
+
+    if outcome == "failure" and application_events:
+        response_code = application_events[-1].get("pd_response_code")
+        if response_code == "PNF":
+            return "APPLICATION", "PNF", 200
+        if response_code == "ERROR":
+            return "APPLICATION", "UNKNOWN", 500
+        return "APPLICATION", "UNKNOWN", 500
+
+    if outcome == "success":
+        return None, None, 200
+
+    return None, None, None
+
+
 def materialize_execution_from_telemetry(request_id: str) -> None:
     """
     Deterministically build a PD execution from telemetry.
@@ -44,11 +106,11 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
             event_layer,
             status,
             pd_response_code,
-            pd_error_code,
-            cert_status,
-            cert_thumbprint,
+            status,
             source_channel_id,
-            source_environment
+            source_environment,
+            cert_status,
+            cert_thumbprint
         FROM telemetry_events
         WHERE correlation_request_id = ?
           AND event_type = 'PD'
@@ -71,27 +133,6 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
 
     transport_events = [r for r in rows if r["event_layer"] == "TRANSPORT"]
     application_events = [r for r in rows if r["event_layer"] == "APPLICATION"]
-
-    # ---------------------------------------------------------
-    # Certificate facts (transport-only)
-    # ---------------------------------------------------------
-    cert_status = "NOT_REPORTED"
-    cert_thumbprint = None
-
-    for ev in transport_events:
-        if ev["cert_status"]:
-            cert_status = ev["cert_status"]
-        if ev["cert_thumbprint"]:
-            cert_thumbprint = ev["cert_thumbprint"]
-
-    # ---------------------------------------------------------
-    # Outcome + Failure Stage + Root Cause
-    # ---------------------------------------------------------
-    outcome = "failure"  # must be lowercase
-    failure_stage = None
-    root_cause = None
-    http_status = None
-
     if application_events:
         last_app = application_events[-1]
         pd_response_code = last_app["pd_response_code"]
@@ -103,27 +144,18 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
             http_status = 200
         else:
             outcome = "failure"
-            failure_stage = "APPLICATION"
-            root_cause = pd_error_code or pd_response_code or "UNKNOWN"
-            http_status = 500
 
-    elif transport_events:
-        last_transport = transport_events[-1]
-        outcome = "failure"
-        failure_stage = "TRANSPORT"
-        root_cause = last_transport["status"] or "UNKNOWN"
-        http_status = 504 if root_cause == "TIMEOUT" else 500
+    transport_events = [r for r in rows if r["event_layer"] == "TRANSPORT"]
+    cert_status = _select_cert_status(transport_events)
+    cert_thumbprint = _select_cert_thumbprint(transport_events)
+    failure_stage, root_cause, http_status = _derive_failure_metadata(
+        cert_status=cert_status,
+        outcome=outcome,
+        transport_events=transport_events,
+        application_events=application_events,
+    )
 
-    # Security escalation (certs override stage if bad)
-    if cert_status in ("INVALID", "EXPIRED", "UNTRUSTED"):
-        outcome = "failure"
-        failure_stage = "SECURITY"
-        root_cause = f"CERT_{cert_status}"
-        http_status = 495  # TLS cert error (non-standard but common)
-
-    # ---------------------------------------------------------
-    # Persist execution
-    # ---------------------------------------------------------
+    # ✅ STORE-CONTRACT-COMPLIANT UPSERT
     upsert_execution(
         request_id=request_id,
         event_id=last["event_id"],
@@ -146,9 +178,6 @@ def materialize_execution_from_telemetry(request_id: str) -> None:
     conn.commit()
     conn.close()
 
-    # ---------------------------------------------------------
-    # Findings evaluation (may escalate cert / root cause)
-    # ---------------------------------------------------------
     execution = PDExecution(
         requestId=request_id,
         startedAt=started_at.isoformat().replace("+00:00", "Z"),
