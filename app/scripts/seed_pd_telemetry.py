@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timedelta, UTC
 
 from app.telemetry.models import TelemetryEvent
-from app.telemetry.materializer import materialize_pd_execution
+from app.pd.materializer import materialize_pd_execution
 
 # --------------------------------------------------
 # 🔒 HARD-CODED DB PATH (ABSOLUTE TRUTH)

@@ -29,7 +29,8 @@ settings = get_settings()
 
 @router.get("", response_model=List[FindingOut])
 async def get_findings(
-    limit: int = Query(50, ge=1, le=200),
+    # 🔥 FIX: limit is now OPTIONAL — no silent cap
+    limit: int | None = Query(None, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     severity: str | None = None,
     status: str | None = None,
@@ -40,6 +41,12 @@ async def get_findings(
     sort: str = "created_at",
     order: str = "desc",
 ):
+    """
+    Returns findings.
+
+    - If `limit` is omitted → ALL findings are returned
+    - If `limit` is provided → paginated results
+    """
     try:
         rows = list_findings(
             limit=limit,
@@ -88,7 +95,7 @@ async def get_findings(
 
 
 # ============================================================
-# GET /findings/count
+# GET /findings/count  (AUTHORITATIVE METRICS SOURCE)
 # ============================================================
 
 @router.get("/count", response_model=FindingsCountOut)
@@ -97,6 +104,10 @@ async def get_findings_count(
     status: str | None = None,
     execution_type: str | None = None,
 ):
+    """
+    Returns authoritative finding counts.
+    This endpoint MUST be used by dashboard widgets.
+    """
     try:
         counts = get_findings_counts(
             severity=severity,
@@ -182,7 +193,7 @@ async def update_status(finding_id: str, payload: FindingStatusUpdate):
             organization=(
                 {
                     "id": row["organization_id"],
-                    "name": row["organization_name"]
+                    "name": row["organization_name"],
                 }
                 if row.get("organization_id")
                 else None

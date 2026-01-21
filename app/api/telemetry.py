@@ -7,7 +7,8 @@ from app.db.connection import get_connection
 from app.oids.repository import register_observed_oid
 from app.telemetry.models import TelemetryEvent
 from app.telemetry.validator import validate_event_payload
-from app.telemetry.materializer import materialize_pd_execution
+from app.pd.materialization_trigger import materialize_pd_execution
+
 
 router = APIRouter(prefix="/telemetry", tags=["telemetry"])
 logger = logging.getLogger(__name__)

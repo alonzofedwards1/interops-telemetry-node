@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 from app.db.connection import get_connection
 
@@ -29,7 +29,7 @@ def _utc_now() -> str:
 
 def list_findings(
     *,
-    limit: int = 50,
+    limit: Optional[int] = None,   # 🔥 IMPORTANT
     offset: int = 0,
     severity: str | None = None,
     status: str | None = None,
@@ -98,10 +98,12 @@ def list_findings(
 
         {where_sql}
         ORDER BY {sort} {order}
-        LIMIT ? OFFSET ?
     """
 
-    params.extend([limit, offset])
+    # 🔥 CRITICAL FIX: only apply LIMIT if provided
+    if limit is not None:
+        query += " LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
 
     conn = get_connection()
     try:
@@ -158,7 +160,7 @@ def get_finding_by_id(finding_id: str) -> dict[str, Any] | None:
 
 
 # ============================================================
-# COUNTS
+# COUNTS (AUTHORITATIVE INVENTORY)
 # ============================================================
 
 def get_findings_counts(
@@ -207,7 +209,7 @@ def get_findings_counts(
 
 
 # ============================================================
-# WRITE OPERATIONS (RESTORED)
+# WRITE OPERATIONS
 # ============================================================
 
 def add_or_update_finding(

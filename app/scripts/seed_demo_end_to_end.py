@@ -2,36 +2,45 @@ import sqlite3
 import uuid
 import random
 from datetime import datetime, timedelta, timezone
-import time
+
+# ============================================================
+# CONFIG
+# ============================================================
 
 DB_PATH = r"C:\Users\alonz\Documents\interops-telemetry-api\app\db\telemetry.db"
 
+ORG_COUNT = 20
+LOGICAL_EXECUTIONS = 50_000
+MAX_ATTEMPTS = 5
+FINDING_RATE = 0.25
+DAYS_BACK = 60
+
+random.seed(42)
+
 # ============================================================
-# Helpers
+# HELPERS
 # ============================================================
 
 def now():
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(timezone.utc)
 
-def with_retry(fn, label, retries=5, delay=0.25):
-    for attempt in range(retries):
-        try:
-            return fn()
-        except sqlite3.OperationalError as e:
-            if "locked" not in str(e).lower():
-                raise
-            if attempt == retries - 1:
-                raise
-            print(f"⏳ DB locked while writing {label}, retrying...")
-            time.sleep(delay)
+def iso(dt):
+    return dt.isoformat()
+
+def tune_sqlite(conn):
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA temp_store=MEMORY;")
+    conn.execute("PRAGMA cache_size=-128000;")
 
 # ============================================================
-# Wipe tables (users + sessions preserved)
+# CLEAR TABLES (DETERMINISTIC RESET)
 # ============================================================
 
 TABLES = [
     "findings",
     "pd_executions",
+    "telemetry_events",
     "organization_oids",
     "oid_directory",
     "organizations",
@@ -39,258 +48,285 @@ TABLES = [
 
 def clear_tables(conn):
     cur = conn.cursor()
-    for table in TABLES:
-        with_retry(lambda t=table: cur.execute(f"DELETE FROM {t};"), f"clear {table}")
+    for t in TABLES:
+        cur.execute(f"DELETE FROM {t}")
     conn.commit()
 
 # ============================================================
-# Seed Organizations + OIDs
+# ORGS + OIDS
 # ============================================================
-
-ORG_STATES = ["TX", "CA", "NY", "FL", "VA"]
-ORG_TYPES = ["Hospital", "HIE", "Health System"]
 
 def generate_oid():
-    return f"2.16.840.1.113883.3.{random.randint(100,999)}.{random.randint(1,99)}"
+    return f"2.16.840.1.113883.3.{random.randint(100,999)}.{random.randint(1,999)}"
 
-def seed_organizations_and_oids(cur):
-    org_ids = []
+def seed_organizations(cur):
     oids = []
 
-    for i in range(8):
+    for i in range(ORG_COUNT):
         org_id = str(uuid.uuid4())
         oid = generate_oid()
-
-        org_type = random.choice(ORG_TYPES)
-        qhin = random.choice(["CommonWell", "eHealthExchange"])
-        hie = random.choice(["CRISP", "Epic", "Carequality"])
-        state = random.choice(ORG_STATES)
-
-        legal_name = f"Demo Health Org {i+1}"
-        display_name = f"DemoOrg {i+1}"
-
-        # organizations
-        cur.execute("""
-            INSERT INTO organizations (
-                id,
-                legal_name,
-                display_name,
-                organization_type,
-                primary_oid,
-                qhin_name,
-                hie_name,
-                state
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            org_id,
-            legal_name,
-            display_name,
-            org_type,
-            oid,
-            qhin,
-            hie,
-            state,
-        ))
-
-        # oid_directory
-        cur.execute("""
-            INSERT INTO oid_directory (
-                oid,
-                organization_name,
-                organization_type,
-                qhin_name,
-                hie_name,
-                status,
-                confidence_score,
-                first_seen_at,
-                last_seen_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            oid,
-            display_name,
-            org_type,
-            qhin,
-            hie,
-            "approved",
-            round(random.uniform(0.75, 0.95), 2),
-            now(),
-            now(),
-        ))
-
-        # organization_oids
-        cur.execute("""
-            INSERT INTO organization_oids (
-                organization_id,
-                oid,
-                role,
-                environment
-            )
-            VALUES (?, ?, 'owner', 'prod')
-        """, (org_id, oid))
-
-        org_ids.append(org_id)
         oids.append(oid)
 
-    return org_ids, oids
+        cur.execute("""
+            INSERT INTO organizations (
+                id, legal_name, display_name, organization_type,
+                primary_oid, qhin_name, hie_name, state
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            org_id,
+            f"Demo Health Org {i+1}",
+            f"DemoOrg {i+1}",
+            random.choice(["Hospital", "Health System", "HIE"]),
+            oid,
+            random.choice(["CommonWell", "eHealthExchange"]),
+            random.choice(["Carequality", "Epic", "CRISP"]),
+            random.choice(["TX", "CA", "NY", "FL", "VA"]),
+        ))
+
+        cur.execute("""
+            INSERT INTO oid_directory (
+                oid, organization_name, organization_type,
+                qhin_name, hie_name, status,
+                confidence_score, first_seen_at, last_seen_at
+            ) VALUES (?, ?, 'Hospital', 'CommonWell', 'Carequality',
+                     'approved', ?, ?, ?)
+        """, (
+            oid,
+            f"DemoOrg {i+1}",
+            round(random.uniform(0.7, 0.95), 2),
+            iso(now()),
+            iso(now()),
+        ))
+
+        cur.execute("""
+            INSERT INTO organization_oids (
+                organization_id, oid, role, environment
+            ) VALUES (?, ?, 'owner', 'prod')
+        """, (org_id, oid))
+
+    return oids
 
 # ============================================================
-# Seed PD Executions (CERT-AWARE)
+# TELEMETRY INGESTION (ONLY DIRECT WRITES)
 # ============================================================
 
-CERT_STATUSES = ["VALID", "EXPIRING_SOON", "EXPIRED"]
+def seed_pd_telemetry(cur, oids):
+    for _ in range(LOGICAL_EXECUTIONS):
+        correlation_id = str(uuid.uuid4())
+        attempts = random.randint(1, MAX_ATTEMPTS)
 
-FAILURE_PROFILE = {
-    "EXPIRED": ("CERT_EXPIRED", "TLS", 495),
-}
-
-def seed_pd_executions(cur, oids, count=40):
-    exec_ids = []
-
-    for _ in range(count):
-        request_id = str(uuid.uuid4())
-
-        cert_status = random.choices(
-            CERT_STATUSES,
-            weights=[0.65, 0.20, 0.15]
-        )[0]
-
-        started = datetime.now(timezone.utc) - timedelta(seconds=random.randint(1, 90))
-        completed = started + timedelta(milliseconds=random.randint(200, 6000))
-        duration_ms = int((completed - started).total_seconds() * 1000)
-
-        cert_thumbprint = (
-            f"{random.randint(10,99):X}:{random.randint(10,99):X}:{random.randint(10,99):X}"
+        base_time = now() - timedelta(
+            days=random.randint(0, DAYS_BACK),
+            seconds=random.randint(0, 86400)
         )
 
-        if cert_status == "EXPIRED":
-            outcome = "failure"
-            root_cause, stage, http_status = FAILURE_PROFILE["EXPIRED"]
-            retry_count = random.randint(1, 3)
-        else:
-            outcome = "success"
-            root_cause = None
-            stage = None
-            http_status = 200
-            retry_count = 0
+        for attempt in range(attempts):
+            ts = base_time + timedelta(seconds=attempt * random.randint(2, 6))
+            is_last = attempt == attempts - 1
+
+            transport_ok = is_last and random.random() > 0.1
+
+            # ---------------- TRANSPORT EVENT ----------------
+            cur.execute("""
+                INSERT INTO telemetry_events (
+                    event_id, event_type, event_layer, event_subtype,
+                    timestamp_utc, organization, qhin, environment,
+                    status, duration_ms, correlation_request_id,
+                    protocol_standard, protocol_interaction_id,
+                    raw_payload, received_at
+                ) VALUES (?, 'PD', 'TRANSPORT', ?, ?, ?, ?, ?, ?, ?, ?, 'HL7', 'ITI-55', ?, ?)
+            """, (
+                str(uuid.uuid4()),
+                "OK" if transport_ok else "TIMEOUT",
+                iso(ts),
+                random.choice(oids),
+                random.choice(["CommonWell", "eHealthExchange"]),
+                random.choice(["prod", "stage"]),
+                "OK" if transport_ok else "TIMEOUT",
+                random.randint(100, 1200),
+                correlation_id,
+                "<transport/>",
+                iso(now()),
+            ))
+
+            if not transport_ok:
+                continue
+
+            # ---------------- APPLICATION EVENT ----------------
+            response = random.choices(
+                ["SUCCESS", "PNF", "ERROR"],
+                weights=[0.7, 0.2, 0.1]
+            )[0]
+
+            missing = None
+            error = None
+
+            if response != "SUCCESS" and random.random() < 0.25:
+                missing = random.choice(["livingSubjectId", "patientIdentifier"])
+                error = "MISSING_REQUIRED_ELEMENT"
+
+            cur.execute("""
+                INSERT INTO telemetry_events (
+                    event_id, event_type, event_layer, event_subtype,
+                    timestamp_utc, organization, qhin, environment,
+                    status, duration_ms, correlation_request_id,
+                    xml_parse_status, pd_response_code,
+                    pd_error_code, missing_required_elements,
+                    protocol_standard, protocol_interaction_id,
+                    raw_payload, received_at
+                ) VALUES (?, 'PD', 'APPLICATION', 'PD_RESPONSE_XML',
+                          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'HL7', 'ITI-55', ?, ?)
+            """, (
+                str(uuid.uuid4()),
+                iso(ts + timedelta(milliseconds=random.randint(200, 4000))),
+                random.choice(oids),
+                random.choice(["CommonWell", "eHealthExchange"]),
+                random.choice(["prod", "stage"]),
+                "OK" if response == "SUCCESS" else "ERROR",
+                random.randint(200, 4000),
+                correlation_id,
+                "PARSED",
+                response,
+                error,
+                missing,
+                "<HL7_PD_RESPONSE/>",
+                iso(now()),
+            ))
+
+# ============================================================
+# MATERIALIZER: telemetry_events → pd_executions
+# ============================================================
+
+def materialize_pd_executions(conn):
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            correlation_request_id,
+            MIN(timestamp_utc),
+            MAX(timestamp_utc),
+            COUNT(*),
+            MAX(pd_response_code),
+            MAX(pd_error_code)
+        FROM telemetry_events
+        WHERE event_type='PD'
+        GROUP BY correlation_request_id
+    """)
+
+    for req_id, start, end, count, resp, err in cur.fetchall():
+        outcome = "success" if resp == "SUCCESS" else "failure"
 
         cur.execute("""
-            INSERT INTO pd_executions (
-                request_id,
-                transaction_type,
-                direction,
-                started_at,
-                completed_at,
-                duration_ms,
-                outcome,
-                root_cause,
-                failure_stage,
-                http_status,
-                retry_count,
-                cert_thumbprint,
-                cert_status,
-                source_environment,
-                source_oid,
-                target_oid,
-                qhin_name,
-                created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO pd_executions (
+                request_id, transaction_type, direction,
+                started_at, completed_at, duration_ms,
+                outcome, event_count, root_cause,
+                failure_stage, http_status, retry_count, created_at
+            ) VALUES (?, 'PD', 'outbound', ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         """, (
-            request_id,
-            "PD",
-            random.choice(["inbound", "outbound"]),
-            started.isoformat(),
-            completed.isoformat(),
-            duration_ms,
+            req_id,
+            start,
+            end,
+            random.randint(300, 6000),
             outcome,
-            root_cause,
-            stage,
-            http_status,
-            retry_count,
-            cert_thumbprint,
-            cert_status,
-            random.choice(["prod", "stage"]),
-            random.choice(oids),
-            random.choice(oids),
-            random.choice(["CommonWell", "eHealthExchange"]),
-            now(),
+            count,
+            err or ("PNF" if resp == "PNF" else None),
+            "APPLICATION" if resp else "NETWORK",
+            200 if resp else 504,
+            max(0, count - 1),
         ))
 
-        exec_ids.append(request_id)
-
-    return exec_ids
+    conn.commit()
 
 # ============================================================
-# Seed Findings (Execution-Correlated)
+# RULES ENGINE → FINDINGS (ONLY LEGAL WRITER)
 # ============================================================
 
-SEVERITIES = ["info", "warning", "critical"]
-STATUSES = ["open", "resolved", "non-compliant"]
+def evaluate_findings(conn):
+    cur = conn.cursor()
 
-def seed_findings(cur, exec_ids, oids, count=100):
-    for _ in range(count):
+    cur.execute("""
+        SELECT request_id, root_cause, failure_stage
+        FROM pd_executions
+        WHERE outcome='failure'
+    """)
+
+    for request_id, root_cause, stage in cur.fetchall():
+
+        if random.random() > FINDING_RATE:
+            continue
+
+        if root_cause == "MISSING_REQUIRED_ELEMENT":
+            severity = "critical"
+            summary = "Missing required HL7 element"
+            detail = "Required patient identity element missing; patient match cannot succeed."
+            action = "Update PD request to include required HL7 identifiers."
+        elif root_cause == "PNF":
+            severity = "warning"
+            summary = "Patient Not Found returned"
+            detail = "PNF returned by responder; may be valid or due to identifier quality."
+            action = "Verify demographics and identifier formatting."
+        else:
+            severity = "critical"
+            summary = "Transport-level PD failure"
+            detail = "PD attempt failed before successful application exchange."
+            action = "Inspect network, TLS, and endpoint availability."
+
         cur.execute("""
             INSERT INTO findings (
-                id,
-                execution_id,
-                execution_type,
-                severity,
-                category,
-                summary,
-                technical_detail,
-                recommended_action,
-                status,
-                related_oid,
-                first_seen_at,
-                last_seen_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, execution_id, execution_type,
+                severity, category, summary,
+                technical_detail, recommended_action,
+                status, first_seen_at, last_seen_at, created_at
+            ) VALUES (?, ?, 'PD', ?, 'Patient Discovery',
+                      ?, ?, ?, 'open', ?, ?, CURRENT_TIMESTAMP)
         """, (
             str(uuid.uuid4()),
-            random.choice(exec_ids),
-            "PD",
-            random.choice(SEVERITIES),
-            "Patient Discovery",
-            "PD anomaly detected",
-            "Observed deviation during PD execution",
-            "Review demographics or retry transaction",
-            random.choice(STATUSES),
-            random.choice(oids),
-            now(),
-            now(),
+            request_id,
+            severity,
+            summary,
+            detail,
+            action,
+            iso(now()),
+            iso(now()),
         ))
 
+    conn.commit()
+
 # ============================================================
-# Main
+# MAIN
 # ============================================================
 
 def main():
-    print("🌱 Rebuilding execution-intelligence dataset...")
+    print("🚀 Telemetry-first seed (correct architecture)")
 
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA foreign_keys=OFF;")
-
+    conn = sqlite3.connect(DB_PATH, timeout=60)
+    tune_sqlite(conn)
     cur = conn.cursor()
 
     clear_tables(conn)
     print("🧹 Tables cleared")
 
-    org_ids, oids = seed_organizations_and_oids(cur)
-    print("✅ Organizations + OID Directory")
-
-    exec_ids = seed_pd_executions(cur, oids)
-    print("✅ PD Executions (cert-aware)")
-
-    seed_findings(cur, exec_ids, oids)
-    print("✅ Findings")
-
+    oids = seed_organizations(cur)
     conn.commit()
-    conn.close()
+    print(f"🏥 {ORG_COUNT} orgs seeded")
 
-    print("🎉 Dataset ready for integration health + cert analytics")
+    seed_pd_telemetry(cur, oids)
+    conn.commit()
+
+    cur.execute("SELECT COUNT(*) FROM telemetry_events")
+    print(f"🛰️ telemetry_events: {cur.fetchone()[0]:,}")
+
+    materialize_pd_executions(conn)
+    cur.execute("SELECT COUNT(*) FROM pd_executions")
+    print(f"🧱 pd_executions: {cur.fetchone()[0]:,}")
+
+    evaluate_findings(conn)
+    cur.execute("SELECT COUNT(*) FROM findings")
+    print(f"🚨 findings: {cur.fetchone()[0]:,}")
+
+    conn.close()
+    print("✅ Seed complete")
 
 if __name__ == "__main__":
     main()
