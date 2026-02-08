@@ -1,5 +1,6 @@
 import hmac
 import hashlib
+import logging
 from fastapi import APIRouter, Depends, Request, Response, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -11,6 +12,7 @@ from app.db.connection import get_connection
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 class LoginRequest(BaseModel):
@@ -33,26 +35,19 @@ async def login(payload: LoginRequest, response: Response):
     conn.close()
 
     if not row:
-        print("USER NOT FOUND:", payload.username)
+        logger.warning("Login failed for unknown user", extra={"username": payload.username})
         return JSONResponse(status_code=401, content={"error": "Invalid credentials"})
 
     provided_hash = hash_password(payload.password)
     stored_hash = row["password_hash"]
-
-    # 🔴 DEBUG OUTPUT
-    print("AUTH SALT IN USE:", settings.auth_password_salt)
-    print("PASSWORD RECEIVED:", payload.password)
-    print("COMPUTED HASH:", provided_hash)
-    print("DB HASH:", stored_hash)
 
     is_password_match = (
         len(stored_hash) == len(provided_hash)
         and hmac.compare_digest(stored_hash, provided_hash)
     )
 
-    print("PASSWORD MATCH:", is_password_match)
-
     if not is_password_match:
+        logger.warning("Login failed due to invalid password", extra={"username": payload.username})
         return JSONResponse(status_code=401, content={"error": "Invalid credentials"})
 
     token, expires_at = issue_session(row["id"])
