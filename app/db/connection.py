@@ -14,11 +14,19 @@ _db_url_logged = False
 _PLACEHOLDER_PATTERN = re.compile(r"\?")
 
 
+def _normalize_database_url(database_url: str) -> str:
+    """Accept SQLAlchemy-style URLs in psycopg2 connection."""
+
+    if database_url.startswith("postgresql+psycopg2://"):
+        return database_url.replace("postgresql+psycopg2://", "postgresql://", 1)
+    return database_url
+
+
 class PostgresConnection:
     """Thin compatibility wrapper exposing a sqlite-like API over psycopg2."""
 
     def __init__(self, database_url: str) -> None:
-        self._conn = psycopg2.connect(database_url, cursor_factory=RealDictCursor)
+        self._conn = psycopg2.connect(_normalize_database_url(database_url), cursor_factory=RealDictCursor)
 
     def cursor(self):
         return self._conn.cursor()
