@@ -16,7 +16,7 @@ def main() -> None:
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='findings'"
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'findings'"
         ).fetchone()
         if not row:
             raise RuntimeError("findings table not found")

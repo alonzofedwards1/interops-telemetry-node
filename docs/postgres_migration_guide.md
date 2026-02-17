@@ -40,3 +40,13 @@ These tables cover all persisted domains currently present in the repository:
 - SQLite `TEXT` datetime fields were upgraded to `TIMESTAMPTZ` where appropriate.
 - `raw_payload` and `request_headers` are stored as `JSONB` in PostgreSQL.
 - Integer autoincrement IDs are represented as `BIGSERIAL`.
+
+
+## Connection strings
+
+Use `DATABASE_URL` and do not use SQLite paths.
+
+- Backend running locally:
+  - `postgresql+psycopg2://interoplens:devpassword@localhost:5432/interoplens`
+- Backend running inside Docker network:
+  - `postgresql+psycopg2://interoplens:devpassword@interoplens-db:5432/interoplens`

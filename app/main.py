@@ -50,7 +50,7 @@ async def startup() -> None:
 async def health():
     return {
         "status": "ok",
-        "db_path": settings.telemetry_db_path,
+        "database_url": settings.database_url,
         "port": settings.port,
         "environment": settings.environment,
         "allowed_origins": settings.allowed_origins,

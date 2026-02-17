@@ -1,12 +1,11 @@
 import os
 from dataclasses import dataclass
 from typing import List
-from pathlib import Path
-
-BASE_DIR = Path(__file__).resolve().parents[2]
 
 DEFAULT_PORT = 8081
-DEFAULT_DB_PATH = str(BASE_DIR / "app" / "db" / "telemetry.db")
+DEFAULT_DATABASE_URL = (
+    "postgresql://interoplens:devpassword@localhost:5432/interoplens"
+)
 DEFAULT_ENVIRONMENT = "dev"
 DEFAULT_ALLOWED_ORIGINS = ["http://localhost:3000"]
 
@@ -14,7 +13,7 @@ DEFAULT_ALLOWED_ORIGINS = ["http://localhost:3000"]
 @dataclass(frozen=True)
 class Settings:
     port: int
-    telemetry_db_path: str
+    database_url: str
     environment: str
     allowed_origins: List[str]
 
@@ -33,15 +32,11 @@ def get_settings() -> Settings:
 
     return Settings(
         port=int(os.environ.get("TELEMETRY_PORT", DEFAULT_PORT)),
-        telemetry_db_path=os.environ.get("TELEMETRY_DB_PATH", DEFAULT_DB_PATH),
+        database_url=os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL),
         environment=os.environ.get("ENVIRONMENT", DEFAULT_ENVIRONMENT),
         allowed_origins=origins,
-
         auth_cookie_name=os.environ.get("AUTH_COOKIE_NAME", "telemetry_auth"),
-
-        #  MUST be False for localhost (http)
         auth_cookie_secure=False,
-
         auth_session_ttl_seconds=int(os.environ.get("AUTH_SESSION_TTL_SECONDS", "43200")),
         auth_password_salt=os.environ.get("AUTH_PASSWORD_SALT", "dev_salt_123"),
     )

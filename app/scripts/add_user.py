@@ -1,34 +1,29 @@
-import sqlite3
 import hashlib
-from datetime import datetime, timezone
-from pathlib import Path
 import os
+from datetime import datetime, timezone
 
-DB_PATH = Path(__file__).resolve().parents[1] / "db" / "telemetry.db"
+from app.db.connection import get_connection
 
-# MUST MATCH ENV
 AUTH_PASSWORD_SALT = os.getenv("AUTH_PASSWORD_SALT", "dev_salt_123")
-
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "admin123"
 
-def now():
+
+def now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
 
 def hash_password(password: str) -> str:
     combined = f"{AUTH_PASSWORD_SALT}:{password}"
     return hashlib.sha256(combined.encode("utf-8")).hexdigest()
 
-def reset_admin():
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    cursor = conn.cursor()
 
-    # Remove old admin (bad hash)
-    cursor.execute("DELETE FROM users WHERE username = ?", (ADMIN_USERNAME,))
-
+def reset_admin() -> None:
+    conn = get_connection()
     password_hash = hash_password(ADMIN_PASSWORD)
 
-    cursor.execute(
+    conn.execute("DELETE FROM users WHERE username = ?", (ADMIN_USERNAME,))
+    conn.execute(
         """
         INSERT INTO users (username, password_hash, created_at)
         VALUES (?, ?, ?)
@@ -44,6 +39,7 @@ def reset_admin():
     print("password: admin123")
     print("salt used:", AUTH_PASSWORD_SALT)
     print("hash:", password_hash)
+
 
 if __name__ == "__main__":
     reset_admin()
