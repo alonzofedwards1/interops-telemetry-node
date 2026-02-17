@@ -4,9 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import os
 
-DB_PATH = Path(
-    r"C:\Users\alonz\Documents\interops-telemetry-api\app\db\telemetry.db"
-)
+DB_PATH = Path(__file__).resolve().parents[1] / "db" / "telemetry.db"
 
 # MUST MATCH ENV
 AUTH_PASSWORD_SALT = os.getenv("AUTH_PASSWORD_SALT", "dev_salt_123")
