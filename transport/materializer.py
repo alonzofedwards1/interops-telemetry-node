@@ -9,6 +9,7 @@ from .models import TransportEvent, TransportRequest, TransportResponse
 
 
 def _as_datetime(value: Any) -> datetime:
+    """Convert known timestamp formats into timezone-aware UTC datetime."""
 
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
@@ -25,6 +26,7 @@ def _as_datetime(value: Any) -> datetime:
 
 
 def materialize_transaction(raw: dict[str, Any]) -> TransportEvent:
+    """Normalize one raw OpenHIM transaction object into ``TransportEvent``."""
 
     request_data = raw.get("request", {}) or {}
     response_data = raw.get("response", {}) or {}

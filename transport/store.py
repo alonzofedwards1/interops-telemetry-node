@@ -1,4 +1,4 @@
-
+"""Database persistence for transport events using SQLAlchemy."""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ from .models import TransportEvent
 
 class Base(DeclarativeBase):
     """Base SQLAlchemy declarative class."""
+
+
 class TransportEventRecord(Base):
     """Database model that stores normalized transport events."""
 

@@ -1,3 +1,5 @@
+"""Ingestion workflow for polling OpenHIM and storing normalized events."""
+
 from __future__ import annotations
 
 import logging
@@ -12,6 +14,11 @@ logger = logging.getLogger(__name__)
 
 
 def ingest_once(client: OpenHIMClient, store: TransportEventStore, limit: int = 100) -> int:
+    """Fetch and persist up to ``limit`` transactions from OpenHIM.
+
+    Returns:
+        Number of events upserted in the local database.
+    """
 
     raw_transactions = client.get_transactions(limit=limit)
     count = 0
@@ -30,6 +37,7 @@ def run_ingestion_loop(
     poll_interval_seconds: int = 30,
     limit: int = 100,
 ) -> None:
+    """Run an endless polling loop that ingests transactions into the DB."""
 
     logger.info("Starting transport ingestion loop")
 
@@ -44,6 +52,7 @@ def run_ingestion_loop(
 
 
 def main() -> None:
+    """CLI entrypoint for transport ingestion."""
 
     logging.basicConfig(level=logging.INFO)
 
