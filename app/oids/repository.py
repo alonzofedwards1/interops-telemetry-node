@@ -139,10 +139,17 @@ def get_oid(oid: str) -> dict[str, Any] | None:
 
 
 def _pd_has_oid_columns(conn) -> bool:
-    columns = conn.execute("PRAGMA table_info(pd_executions)").fetchall()
-    if not columns:
+    rows = conn.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'pd_executions'
+        """
+    ).fetchall()
+    if not rows:
         return False
-    column_names = {row[1] for row in columns}
+    column_names = {row["column_name"] for row in rows}
     return "source_oid" in column_names and "target_oid" in column_names
 
 

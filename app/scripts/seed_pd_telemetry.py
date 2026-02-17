@@ -1,4 +1,4 @@
-import sqlite3
+from app.db.connection import get_connection
 import uuid
 import json
 import os
@@ -10,7 +10,6 @@ from app.pd.materializer import materialize_pd_execution
 # --------------------------------------------------
 # 🔒 HARD-CODED DB PATH (ABSOLUTE TRUTH)
 # --------------------------------------------------
-DB_PATH = r"C:\Users\alonz\Documents\interops-telemetry-api\app\db\telemetry.db"
 
 print("Using database:", DB_PATH)
 
@@ -26,7 +25,7 @@ def iso_now(offset_ms: int = 0) -> str:
     ).isoformat().replace("+00:00", "Z")
 
 
-def insert_event(conn: sqlite3.Connection, event: TelemetryEvent, raw_payload: dict):
+def insert_event(conn: object, event: TelemetryEvent, raw_payload: dict):
     """
     Insert a telemetry event.
     MUST commit before calling materializer to avoid SQLite lock.
@@ -64,9 +63,8 @@ def insert_event(conn: sqlite3.Connection, event: TelemetryEvent, raw_payload: d
 # Main seeding logic
 # --------------------------------------------------
 def seed():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-
+    conn = get_connection()
+    
     total = 0
 
     def make_event(status: str | None, materialize: bool):

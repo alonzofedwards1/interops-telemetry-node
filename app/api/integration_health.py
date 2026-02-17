@@ -1,5 +1,4 @@
 import logging
-import sqlite3
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.integration_health.store import get_integration_health
@@ -13,7 +12,7 @@ router = APIRouter(
 )
 
 @router.get("/integrations")
-def integration_health(conn: sqlite3.Connection = Depends(get_connection)):
+def integration_health(conn = Depends(get_connection)):
     try:
         return get_integration_health(conn)
     except Exception:
