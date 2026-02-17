@@ -11,6 +11,7 @@ if str(ROOT_PATH) not in sys.path:
     sys.path.insert(0, str(ROOT_PATH))
 
 from app.api.auth import router as auth_router
+from app.api.committee_queue import router as committee_queue_router
 from app.api.findings import router as findings_router
 from app.api.integration_health import router as integration_health_router
 from app.api.oids import router as oids_router
@@ -34,6 +35,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router, prefix="/api")
+app.include_router(committee_queue_router, prefix="/api")
 app.include_router(telemetry_router, prefix="/api")
 app.include_router(pd_executions_router, prefix="/api")
 app.include_router(findings_router, prefix="/api")

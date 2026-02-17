@@ -3,7 +3,7 @@ import re
 from typing import Any
 
 import psycopg2
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import DictCursor
 
 from app.config.settings import get_settings
 
@@ -26,7 +26,7 @@ class PostgresConnection:
     """Thin compatibility wrapper exposing a sqlite-like API over psycopg2."""
 
     def __init__(self, database_url: str) -> None:
-        self._conn = psycopg2.connect(_normalize_database_url(database_url), cursor_factory=RealDictCursor)
+        self._conn = psycopg2.connect(_normalize_database_url(database_url), cursor_factory=DictCursor)
 
     def cursor(self):
         return self._conn.cursor()
