@@ -1,13 +1,11 @@
-import sqlite3
-
-def get_integration_health(conn: sqlite3.Connection):
+def get_integration_health(conn):
     row = conn.execute(
         """
         SELECT
-            COUNT(*) AS totalExecutions,
-            SUM(CASE WHEN LOWER(outcome) = 'success' THEN 1 ELSE 0 END) AS successExecutions,
-            COUNT(DISTINCT CASE WHEN root_cause = 'CERT_EXPIRED' THEN cert_thumbprint END) AS expiredCerts,
-            COUNT(DISTINCT CASE WHEN root_cause = 'CERT_EXPIRED' THEN qhin_name END) AS affectedPartners
+            COUNT(*) AS "totalExecutions",
+            SUM(CASE WHEN LOWER(outcome) = 'success' THEN 1 ELSE 0 END) AS "successExecutions",
+            COUNT(DISTINCT CASE WHEN root_cause = 'CERT_EXPIRED' THEN cert_thumbprint END) AS "expiredCerts",
+            COUNT(DISTINCT CASE WHEN root_cause = 'CERT_EXPIRED' THEN source_oid END) AS "affectedPartners"
         FROM pd_executions
         """
     ).fetchone()

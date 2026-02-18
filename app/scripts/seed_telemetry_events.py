@@ -1,3 +1,4 @@
+from app.db.connection import get_connection
 """
 Seed script for telemetry_events table.
 
@@ -9,19 +10,16 @@ Usage:
     python app/scripts/seed_telemetry_events.py
 """
 
-import sqlite3
 import random
 import uuid
 from datetime import datetime, timedelta, UTC
-from pathlib import Path
 
 # -----------------------------
 # CONFIGURATION
 # -----------------------------
 
-# Resolve to project root telemetry.db
+# Uses DATABASE_URL from environment
 # app/scripts -> app -> project root
-DB_PATH = Path(__file__).resolve().parents[2] / "telemetry.db"
 
 TOTAL_RECORDS = 100
 
@@ -46,11 +44,10 @@ CHANNELS = [
 # DATABASE CONNECTION
 # -----------------------------
 
-conn = sqlite3.connect(DB_PATH)
-conn.row_factory = sqlite3.Row
+conn = get_connection()
 cursor = conn.cursor()
 
-print(f"Using database: {DB_PATH}")
+print("Using database from DATABASE_URL")
 
 # -----------------------------
 # DATA GENERATION

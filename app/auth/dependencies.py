@@ -19,7 +19,7 @@ def require_auth(request: Request) -> int:
         SELECT user_id, expires_at
         FROM telemetry_sessions
         WHERE token_hash = ?
-          AND expires_at > strftime('%s','now')
+          AND expires_at > EXTRACT(EPOCH FROM NOW())::bigint
         """,
         (token_hash,),
     ).fetchone()
