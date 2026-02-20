@@ -112,6 +112,88 @@ async def ingest_event(payload: dict = Body(...), user_id: int = Depends(require
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@router.post("/ingest-openhim")
+async def ingest_openhim_event(payload: dict = Body(...)) -> dict[str, str]:
+    """This endpoint is used for machine-to-machine ingestion from OpenHIM and bypasses user authentication."""
+    event: TelemetryEvent | None = None
+    try:
+        logger.info("INGEST_RECEIVED_OPENHIM", extra={"source": "openhim"})
+
+        event = validate_event_payload(payload)
+        event_layer = payload.get("eventLayer") or payload.get("event_layer")
+        cert_status = None
+        cert_thumbprint = None
+        if event_layer == "TRANSPORT":
+            cert_status = payload.get("certStatus") or payload.get("cert_status")
+            cert_thumbprint = payload.get("certThumbprint") or payload.get("cert_thumbprint")
+
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO telemetry_events (
+                event_id,
+                event_type,
+                event_layer,
+                timestamp_utc,
+                source_channel_id,
+                source_environment,
+                status,
+                duration_ms,
+                correlation_request_id,
+                cert_status,
+                cert_thumbprint,
+                raw_payload
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload.get("eventId"),
+                payload.get("eventType"),
+                event_layer,
+                payload.get("timestamp"),
+                event.source.channelId if event.source else None,
+                event.source.environment if event.source else None,
+                event.outcome.status if event.outcome else None,
+                event.outcome.durationMs if event.outcome else None,
+                event.correlation.requestId if event.correlation else None,
+                cert_status,
+                cert_thumbprint,
+                json.dumps(payload),
+            ),
+        )
+
+        conn.commit()
+        conn.close()
+
+        logger.info(
+            "INGEST_PERSISTED_OPENHIM",
+            extra={
+                "source": "openhim",
+                "eventId": event.eventId,
+                "requestId": event.correlation.requestId if event.correlation else None,
+            },
+        )
+
+        materialize_pd_execution(event)
+
+        return {"status": "accepted", "source": "openhim"}
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception(
+            "Failed to ingest OpenHIM telemetry event",
+            extra={
+                "source": "openhim",
+                "eventId": event.eventId if event else None,
+                "requestId": event.correlation.requestId if event and event.correlation else None,
+            },
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @router.get("/events")
 async def list_events(user_id: int = Depends(require_auth)):
     try:
