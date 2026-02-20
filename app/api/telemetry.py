@@ -1,5 +1,7 @@
 import json
 import logging
+from datetime import datetime, timezone
+from uuid import uuid4
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from app.auth.dependencies import require_auth
@@ -115,17 +117,14 @@ async def ingest_event(payload: dict = Body(...), user_id: int = Depends(require
 @router.post("/ingest-openhim")
 async def ingest_openhim_event(payload: dict = Body(...)) -> dict[str, str]:
     """This endpoint is used for machine-to-machine ingestion from OpenHIM and bypasses user authentication."""
-    event: TelemetryEvent | None = None
-    try:
-        logger.info("INGEST_RECEIVED_OPENHIM", extra={"source": "openhim"})
+    generated_event_id = str(uuid4())
+    created_at = datetime.now(timezone.utc).isoformat()
 
-        event = validate_event_payload(payload)
-        event_layer = payload.get("eventLayer") or payload.get("event_layer")
-        cert_status = None
-        cert_thumbprint = None
-        if event_layer == "TRANSPORT":
-            cert_status = payload.get("certStatus") or payload.get("cert_status")
-            cert_thumbprint = payload.get("certThumbprint") or payload.get("cert_thumbprint")
+    try:
+        logger.info(
+            "INGEST_RECEIVED_OPENHIM",
+            extra={"source": "openhim", "eventId": generated_event_id},
+        )
 
         conn = get_connection()
         cursor = conn.cursor()
@@ -149,17 +148,17 @@ async def ingest_openhim_event(payload: dict = Body(...)) -> dict[str, str]:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                payload.get("eventId"),
-                payload.get("eventType"),
-                event_layer,
-                payload.get("timestamp"),
-                event.source.channelId if event.source else None,
-                event.source.environment if event.source else None,
-                event.outcome.status if event.outcome else None,
-                event.outcome.durationMs if event.outcome else None,
-                event.correlation.requestId if event.correlation else None,
-                cert_status,
-                cert_thumbprint,
+                generated_event_id,
+                "OPENHIM",
+                "INGEST",
+                created_at,
+                None,
+                "openhim",
+                None,
+                None,
+                None,
+                None,
+                None,
                 json.dumps(payload),
             ),
         )
@@ -169,27 +168,17 @@ async def ingest_openhim_event(payload: dict = Body(...)) -> dict[str, str]:
 
         logger.info(
             "INGEST_PERSISTED_OPENHIM",
-            extra={
-                "source": "openhim",
-                "eventId": event.eventId,
-                "requestId": event.correlation.requestId if event.correlation else None,
-            },
+            extra={"source": "openhim", "eventId": generated_event_id, "createdAt": created_at},
         )
 
-        materialize_pd_execution(event)
-
-        return {"status": "accepted", "source": "openhim"}
+        return {"status": "accepted", "source": "openhim", "eventId": generated_event_id}
 
     except HTTPException:
         raise
     except Exception:
         logger.exception(
             "Failed to ingest OpenHIM telemetry event",
-            extra={
-                "source": "openhim",
-                "eventId": event.eventId if event else None,
-                "requestId": event.correlation.requestId if event and event.correlation else None,
-            },
+            extra={"source": "openhim", "eventId": generated_event_id},
         )
         raise HTTPException(status_code=500, detail="Internal server error")
 
