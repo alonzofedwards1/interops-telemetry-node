@@ -1,6 +1,9 @@
 import json
 import logging
-from fastapi import APIRouter, Body, Depends, HTTPException
+import requests
+from datetime import datetime, timezone
+from uuid import uuid4
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from app.auth.dependencies import require_auth
 from app.db.connection import get_connection
@@ -108,6 +111,114 @@ async def ingest_event(payload: dict = Body(...), user_id: int = Depends(require
                 "eventId": event.eventId if event else None,
                 "requestId": event.correlation.requestId if event and event.correlation else None,
             },
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/ingest-openhim")
+async def ingest_openhim_event(request: Request, payload: dict = Body(...)) -> dict[str, str]:
+    """This endpoint is used for machine-to-machine ingestion from OpenHIM and bypasses user authentication."""
+    generated_event_id = str(uuid4())
+    created_at = datetime.now(timezone.utc).isoformat()
+    transaction_id = request.headers.get("X-OpenHIM-TransactionID")
+
+    status = None
+    duration_ms = None
+    source_channel_id = None
+    cert_status = None
+    cert_thumbprint = None
+
+    if transaction_id:
+        try:
+            openhim_url = f"http://openhim-core:8080/transactions/{transaction_id}"
+            resp = requests.get(openhim_url, timeout=3)
+            resp.raise_for_status()
+            transaction = resp.json()
+
+            status = transaction.get("response", {}).get("status")
+            duration_ms = transaction.get("response", {}).get("time")
+            source_channel_id = transaction.get("channelID")
+
+            orchestrations = transaction.get("orchestrations", [])
+            if orchestrations:
+                tls = orchestrations[0].get("tls", {})
+                cert_thumbprint = tls.get("fingerprint")
+                cert_status = tls.get("authorized")
+        except Exception:
+            logger.exception(
+                "Failed to fetch OpenHIM transaction metadata",
+                extra={"source": "openhim", "eventId": generated_event_id, "transactionId": transaction_id},
+            )
+    else:
+        logger.info(
+            "OpenHIM transaction header missing",
+            extra={"source": "openhim", "eventId": generated_event_id},
+        )
+
+    try:
+        logger.info(
+            "INGEST_RECEIVED_OPENHIM",
+            extra={"source": "openhim", "eventId": generated_event_id, "transactionId": transaction_id},
+        )
+
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO telemetry_events (
+                event_id,
+                event_type,
+                event_layer,
+                timestamp_utc,
+                source_channel_id,
+                source_environment,
+                status,
+                duration_ms,
+                correlation_request_id,
+                cert_status,
+                cert_thumbprint,
+                raw_payload
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                generated_event_id,
+                "OPENHIM",
+                "INGEST",
+                created_at,
+                source_channel_id,
+                "openhim",
+                status,
+                duration_ms,
+                transaction_id,
+                cert_status,
+                cert_thumbprint,
+                json.dumps(payload),
+            ),
+        )
+
+        conn.commit()
+        conn.close()
+
+        logger.info(
+            "INGEST_PERSISTED_OPENHIM",
+            extra={
+                "source": "openhim",
+                "eventId": generated_event_id,
+                "createdAt": created_at,
+                "transactionId": transaction_id,
+            },
+        )
+
+        return {"status": "accepted", "source": "openhim", "eventId": generated_event_id}
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception(
+            "Failed to ingest OpenHIM telemetry event",
+            extra={"source": "openhim", "eventId": generated_event_id, "transactionId": transaction_id},
         )
         raise HTTPException(status_code=500, detail="Internal server error")
 
