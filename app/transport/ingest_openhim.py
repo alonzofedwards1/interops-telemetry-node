@@ -1,189 +1,171 @@
-import logging
-import os
-from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
+from __future__ import annotations
 
+import logging
+from typing import Any
+import os
 import requests
 
 from app.transport.store import TransportEventStore
-from app.transport.cert_probe import probe_server_cert
+from app.transport.materializer import materialize_transaction
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------
-# Custom Exception
-# ---------------------------------------------------------
+# ---------------------------------------
+# Exceptions
+# ---------------------------------------
 
 class OpenHIMUnavailableError(Exception):
-    """Raised when OpenHIM cannot be reached in pull mode."""
     pass
 
 
-# ---------------------------------------------------------
-# Config Validation
-# ---------------------------------------------------------
+# ---------------------------------------
+# Config
+# ---------------------------------------
 
-def validate_openhim_config() -> None:
-    base_url = os.getenv("OPENHIM_BASE_URL")
-    if not base_url:
-        raise RuntimeError("OPENHIM_BASE_URL is required")
-
-    if not base_url.startswith("http"):
-        raise RuntimeError("OPENHIM_BASE_URL must start with http/https")
-
-    logger.info("OpenHIM configuration validated.")
+OPENHIM_BASE_URL = os.getenv("OPENHIM_BASE_URL", "https://openhim-core:8080")
+OPENHIM_USERNAME = os.getenv("OPENHIM_USERNAME", "root@openhim.org")
+OPENHIM_PASSWORD = os.getenv("OPENHIM_PASSWORD", "Maverick2016!")
+OPENHIM_VERIFY_TLS = os.getenv("OPENHIM_VERIFY_TLS", "false").lower() == "true"
+OPENHIM_LIMIT = int(os.getenv("OPENHIM_LIMIT", "200"))
 
 
-# ---------------------------------------------------------
+# ---------------------------------------
 # Helpers
-# ---------------------------------------------------------
+# ---------------------------------------
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+def _extract_transaction_id(payload: dict) -> str | None:
+    """
+    OpenHIM uses `_id` as the primary transaction identifier.
+    Some custom payloads may use `transactionID`.
+    We support both.
+    """
+    return (
+        payload.get("transactionID")
+        or payload.get("_id")
+    )
 
 
-def _should_probe_cert(host: Optional[str], port: Optional[int]) -> bool:
-    if not host or not port:
+def is_openhim_transaction(payload: dict) -> bool:
+    return isinstance(payload, dict) and _extract_transaction_id(payload) is not None
+
+
+def is_fhir_bundle(payload: dict) -> bool:
+    return (
+        isinstance(payload, dict)
+        and payload.get("resourceType") == "Bundle"
+    )
+
+
+def openhim_healthcheck() -> bool:
+    try:
+        response = requests.get(
+            f"{OPENHIM_BASE_URL}/heartbeat",
+            auth=(OPENHIM_USERNAME, OPENHIM_PASSWORD),
+            verify=OPENHIM_VERIFY_TLS,
+            timeout=5,
+        )
+        return response.status_code == 200
+    except Exception:
         return False
-    return port in (443, 8443)
 
 
-def _fetch_transactions_from_openhim() -> List[Dict[str, Any]]:
-    base_url = os.getenv("OPENHIM_BASE_URL", "https://openhim-core:8080").rstrip("/")
-    username = os.getenv("OPENHIM_USERNAME", "root@openhim.org")
-    password = os.getenv("OPENHIM_PASSWORD", "")
-    verify_tls = os.getenv("OPENHIM_VERIFY_TLS", "false").lower() in ("1", "true")
-    limit = int(os.getenv("OPENHIM_LIMIT", "200"))
+# ---------------------------------------
+# Pull Mode
+# ---------------------------------------
 
-    url = f"{base_url}/transactions?limit={limit}"
+def ingest_openhim_transactions(
+    limit: int | None = None,
+    correlation_id: str | None = None,
+) -> dict[str, int]:
+
+    limit = limit or OPENHIM_LIMIT
 
     try:
         response = requests.get(
-            url,
-            auth=(username, password) if password else None,
-            verify=verify_tls,
-            timeout=15,
+            f"{OPENHIM_BASE_URL}/transactions?limit={limit}",
+            auth=(OPENHIM_USERNAME, OPENHIM_PASSWORD),
+            verify=OPENHIM_VERIFY_TLS,
+            timeout=10,
         )
-    except requests.RequestException as e:
-        raise OpenHIMUnavailableError(str(e))
+    except Exception as exc:
+        raise OpenHIMUnavailableError(f"OpenHIM unreachable: {exc}")
 
     if response.status_code != 200:
         raise OpenHIMUnavailableError(
-            f"OpenHIM responded {response.status_code}"
+            f"OpenHIM returned {response.status_code}"
         )
 
-    data = response.json()
-    if not isinstance(data, list):
-        raise RuntimeError("Unexpected OpenHIM transaction payload format")
+    transactions = response.json()
 
-    return data
+    # OpenHIM may wrap transactions inside a property depending on version
+    if isinstance(transactions, dict):
+        transactions = transactions.get("transactions", [])
 
-
-# ---------------------------------------------------------
-# Main Ingest Function
-# ---------------------------------------------------------
-
-def ingest_openhim_transactions(
-    payload: Optional[Dict[str, Any]] = None,
-    headers: Optional[Dict[str, str]] = None,
-) -> None:
-    """
-    Supports:
-    - Push mode (payload provided by OpenHIM)
-    - Pull mode (no payload; fetch from OpenHIM)
-
-    Writes ONLY to transport_events.
-    """
-
-    store = TransportEventStore()
-    cert_cache: Dict[tuple, Any] = {}
-
-    # -----------------------------------------------------
-    # Determine Mode
-    # -----------------------------------------------------
-
-    if payload:
-        logger.info("Push mode ingestion triggered.")
-        transactions = [payload]
-    else:
-        logger.info("Pull mode ingestion triggered.")
-        transactions = _fetch_transactions_from_openhim()
-
-    # -----------------------------------------------------
-    # Process Transactions
-    # -----------------------------------------------------
+    processed = 0
+    skipped = 0
 
     for tx in transactions:
         try:
-            tx_id = str(tx.get("_id") or tx.get("id") or "")
-            if not tx_id:
-                logger.warning("Skipping transaction with no ID.")
-                continue
-
-            # Idempotency guard
-            if store.transaction_exists(tx_id):
-                logger.info("Skipping duplicate transaction %s", tx_id)
-                continue
-
-            request_data = tx.get("request", {})
-            response_data = tx.get("response", {})
-
-            request_method = (request_data.get("method") or "UNKNOWN").upper()
-            request_url = request_data.get("path") or ""
-            headers_data = request_data.get("headers") or {}
-            response_status = int(response_data.get("status") or 0)
-
-            # Timestamp handling
-            timestamp_str = request_data.get("timestamp")
-            timestamp = (
-                datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-                if timestamp_str
-                else _utc_now()
+            tx_id, was_skipped = process_openhim_transaction(
+                tx,
+                correlation_id=correlation_id,
+            )
+            if was_skipped:
+                skipped += 1
+            else:
+                processed += 1
+        except Exception as exc:
+            logger.warning(
+                "transport_transaction_processing_failed",
+                extra={
+                    "error": str(exc),
+                    "correlation_id": correlation_id,
+                },
             )
 
-            # TLS Probe (safe, HTTPS only)
-            host = request_data.get("host")
-            port = request_data.get("port")
+    return {
+        "processed": processed,
+        "skipped": skipped,
+    }
 
-            cert = None
-            if _should_probe_cert(host, port):
-                key = (host, port)
-                if key not in cert_cache:
-                    try:
-                        cert_cache[key] = probe_server_cert(host, port)
-                    except Exception:
-                        cert_cache[key] = None
-                cert = cert_cache[key]
 
-            event = {
-                "transaction_id": tx_id,
-                "channel": tx.get("channelID") or "UNKNOWN",
-                "request_method": request_method,
-                "request_url": request_url,
-                "request_headers": headers_data,
-                "response_status": response_status,
-                "response_duration_ms": int(response_data.get("duration") or 0),
-                "source_ip": tx.get("clientIP"),
-                "timestamp": timestamp,
-                "cert_subject_cn": getattr(cert, "subject_cn", None) if cert else None,
-                "cert_subject_san": getattr(cert, "subject_san", None) if cert else None,
-                "cert_issuer_cn": getattr(cert, "issuer_cn", None) if cert else None,
-                "cert_not_before": getattr(cert, "not_before", None) if cert else None,
-                "cert_not_after": getattr(cert, "not_after", None) if cert else None,
-                "cert_serial": getattr(cert, "serial", None) if cert else None,
-                "cert_sha256": getattr(cert, "sha256", None) if cert else None,
-                "cert_status": getattr(cert, "status", None) if cert else None,
-            }
+# ---------------------------------------
+# Push Mode Processing
+# ---------------------------------------
 
-            store.upsert_event(event)
+def process_openhim_transaction(
+    payload: dict,
+    correlation_id: str | None = None,
+) -> tuple[str, bool]:
 
-        except Exception as e:
-            logger.error(
-                "Failed processing transaction %s: %s",
-                tx.get("_id"),
-                str(e),
-                exc_info=True,
-            )
+    transaction_id = _extract_transaction_id(payload)
 
-    logger.info("Transport ingestion complete.")
+    if not transaction_id:
+        raise ValueError("Missing transactionID or _id")
+
+    store = TransportEventStore()
+
+    # Idempotency check
+    if store.transaction_exists(transaction_id):
+        logger.info(
+            "transport_duplicate_skipped",
+            extra={
+                "transaction_id": transaction_id,
+                "correlation_id": correlation_id,
+            },
+        )
+        return transaction_id, True
+
+    event = materialize_transaction(payload)
+
+    store.upsert_event(event)
+
+    logger.info(
+        "transport_transaction_processed",
+        extra={
+            "transaction_id": transaction_id,
+            "correlation_id": correlation_id,
+        },
+    )
+
+    return transaction_id, False
