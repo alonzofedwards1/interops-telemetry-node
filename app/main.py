@@ -17,7 +17,9 @@ from app.api.integration_health import router as integration_health_router
 from app.api.oids import router as oids_router
 from app.api.pd_executions import router as pd_executions_router
 from app.api.telemetry import router as telemetry_router
+from app.api.transport_routes import router as transport_router
 from app.config.settings import get_settings
+from app.transport.ingest_openhim import validate_openhim_config
 from app.db.migrations import run_migrations
 
 logging.basicConfig(level=logging.INFO)
@@ -37,6 +39,7 @@ app.add_middleware(
 app.include_router(auth_router, prefix="/api")
 app.include_router(committee_queue_router, prefix="/api")
 app.include_router(telemetry_router, prefix="/api")
+app.include_router(transport_router)
 app.include_router(pd_executions_router, prefix="/api")
 app.include_router(findings_router, prefix="/api")
 app.include_router(oids_router, prefix="/api")
@@ -46,6 +49,7 @@ app.include_router(integration_health_router, prefix="/api")
 @app.on_event("startup")
 async def startup() -> None:
     run_migrations()
+    validate_openhim_config()
 
 
 @app.get("/health")
