@@ -38,7 +38,7 @@ app.add_middleware(
 app.include_router(auth_router, prefix="/api")
 app.include_router(committee_queue_router, prefix="/api")
 app.include_router(telemetry_router, prefix="/api")
-app.include_router(transport_router)
+app.include_router(transport_router, prefix="/api")
 app.include_router(pd_executions_router, prefix="/api")
 app.include_router(findings_router, prefix="/api")
 app.include_router(oids_router, prefix="/api")
