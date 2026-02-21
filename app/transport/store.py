@@ -1,8 +1,23 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
-from psycopg2.extras import Json
+
 from psycopg2 import Error
+from psycopg2.extras import Json
 
 from app.db.connection import get_connection
+from app.transport.certificate_provider import CertPayload
+
+
+@dataclass(frozen=True)
+class EndpointInput:
+    name: str
+    host: str
+    port: int
+    scheme: str
+    service_type: str
 
 
 class TransportEventStore:
@@ -16,6 +31,108 @@ class TransportEventStore:
                     (transaction_id,),
                 )
                 return cur.fetchone() is not None
+        finally:
+            conn.close()
+
+    def upsert_endpoint(self, endpoint: EndpointInput) -> int:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO endpoints (name, host, port, scheme, service_type, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
+                    ON CONFLICT (scheme, host, port)
+                    DO UPDATE SET
+                        name = EXCLUDED.name,
+                        service_type = EXCLUDED.service_type,
+                        updated_at = NOW()
+                    RETURNING endpoint_id
+                    """,
+                    (endpoint.name, endpoint.host, endpoint.port, endpoint.scheme, endpoint.service_type),
+                )
+                row = cur.fetchone()
+            conn.commit()
+            return int(row[0])
+        except Error:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def upsert_certificate(self, cert: CertPayload) -> int:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO certificates (
+                        fingerprint_sha1,
+                        subject_cn,
+                        issuer_cn,
+                        not_before,
+                        not_after,
+                        pem,
+                        first_seen_at,
+                        last_seen_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    ON CONFLICT (fingerprint_sha1)
+                    DO UPDATE SET
+                        subject_cn = EXCLUDED.subject_cn,
+                        issuer_cn = EXCLUDED.issuer_cn,
+                        not_before = EXCLUDED.not_before,
+                        not_after = EXCLUDED.not_after,
+                        pem = COALESCE(EXCLUDED.pem, certificates.pem),
+                        last_seen_at = NOW()
+                    RETURNING cert_id
+                    """,
+                    (
+                        cert.fingerprint_sha1,
+                        cert.subject_cn,
+                        cert.issuer_cn,
+                        cert.not_before,
+                        cert.not_after,
+                        cert.pem,
+                    ),
+                )
+                row = cur.fetchone()
+            conn.commit()
+            return int(row[0])
+        except Error:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def insert_endpoint_cert_observation(
+        self,
+        endpoint_id: int,
+        cert_id: int,
+        source: str = "openhim_api",
+        observed_at: datetime | None = None,
+    ) -> None:
+        conn = get_connection()
+        observed_at = observed_at or datetime.now(timezone.utc)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO endpoint_cert_observations (
+                        endpoint_id,
+                        cert_id,
+                        observed_at,
+                        source
+                    )
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (endpoint_id, cert_id, observed_at, source),
+                )
+            conn.commit()
+        except Error:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -43,11 +160,13 @@ class TransportEventStore:
                         cert_not_after,
                         cert_serial,
                         cert_sha256,
-                        cert_status
+                        cert_status,
+                        endpoint_id,
+                        cert_id
                     )
                     VALUES (
                         %s,%s,%s,%s,%s,%s,%s,%s,%s,
-                        %s,%s,%s,%s,%s,%s,%s,%s
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s
                     )
                     ON CONFLICT (transaction_id)
                     DO UPDATE SET
@@ -66,7 +185,9 @@ class TransportEventStore:
                         cert_not_after = EXCLUDED.cert_not_after,
                         cert_serial = EXCLUDED.cert_serial,
                         cert_sha256 = EXCLUDED.cert_sha256,
-                        cert_status = EXCLUDED.cert_status
+                        cert_status = EXCLUDED.cert_status,
+                        endpoint_id = EXCLUDED.endpoint_id,
+                        cert_id = EXCLUDED.cert_id
                     """,
                     (
                         event.get("transaction_id"),
@@ -86,6 +207,8 @@ class TransportEventStore:
                         event.get("cert_serial"),
                         event.get("cert_sha256"),
                         event.get("cert_status"),
+                        event.get("endpoint_id"),
+                        event.get("cert_id"),
                     ),
                 )
 
