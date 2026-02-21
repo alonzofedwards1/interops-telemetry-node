@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
+import logging
 
 from .models import TransportEvent, TransportRequest, TransportResponse
+
+logger = logging.getLogger(__name__)
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -32,19 +35,25 @@ def _as_datetime(value: Any) -> datetime:
     return datetime.now(timezone.utc)
 
 
-def materialize_transaction(raw: dict[str, Any]) -> TransportEvent:
+def materialize_transaction(raw: dict[str, Any]) -> TransportEvent | None:
     """Normalize one raw OpenHIM transaction object into ``TransportEvent``."""
 
     request_data = raw.get("request", {}) or {}
     response_data = raw.get("response", {}) or {}
 
-    transaction_id = (
-        str(raw.get("_id") or raw.get("id") or raw.get("transactionID") or "")
-        or "unknown"
-    )
+    transaction_id = raw.get("transactionID") or raw.get("_id") or raw.get("id")
+
+    if not transaction_id:
+        logger.warning(
+            "transport_materialization_missing_transaction_id",
+            extra={
+                "channelID": raw.get("channelID") or raw.get("channel"),
+            },
+        )
+        return None
 
     return TransportEvent(
-        transaction_id=transaction_id,
+        transaction_id=str(transaction_id),
         channel=str(raw.get("channelID") or raw.get("channel") or "unknown"),
         request=TransportRequest(
             method=str(request_data.get("method") or "UNKNOWN"),
