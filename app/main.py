@@ -17,6 +17,7 @@ from app.api.integration_health import router as integration_health_router
 from app.api.oids import router as oids_router
 from app.api.pd_executions import router as pd_executions_router
 from app.api.telemetry import router as telemetry_router
+from app.api.transport_routes import router as transport_router
 from app.config.settings import get_settings
 from app.db.migrations import run_migrations
 
@@ -37,6 +38,7 @@ app.add_middleware(
 app.include_router(auth_router, prefix="/api")
 app.include_router(committee_queue_router, prefix="/api")
 app.include_router(telemetry_router, prefix="/api")
+app.include_router(transport_router)
 app.include_router(pd_executions_router, prefix="/api")
 app.include_router(findings_router, prefix="/api")
 app.include_router(oids_router, prefix="/api")
