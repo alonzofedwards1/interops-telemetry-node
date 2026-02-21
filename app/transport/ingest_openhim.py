@@ -42,6 +42,7 @@ def _extract_transaction_id(payload: dict) -> str | None:
     return (
         payload.get("transactionID")
         or payload.get("_id")
+        or payload.get("id")
     )
 
 
@@ -104,7 +105,24 @@ def ingest_openhim_transactions(
     processed = 0
     skipped = 0
 
+    logger.info(
+        "transport_transactions_pulled",
+        extra={
+            "transaction_count": len(transactions) if isinstance(transactions, list) else 0,
+            "correlation_id": correlation_id,
+        },
+    )
+
     for tx in transactions:
+        tx_id = _extract_transaction_id(tx) or "unknown"
+        logger.info(
+            "transport_transaction_processing_started",
+            extra={
+                "transaction_id": tx_id,
+                "channelID": tx.get("channelID") if isinstance(tx, dict) else None,
+                "correlation_id": correlation_id,
+            },
+        )
         try:
             tx_id, was_skipped = process_openhim_transaction(
                 tx,
@@ -141,7 +159,7 @@ def process_openhim_transaction(
     transaction_id = _extract_transaction_id(payload)
 
     if not transaction_id:
-        raise ValueError("Missing transactionID or _id")
+        transaction_id = "unknown"
 
     store = TransportEventStore()
 
@@ -151,6 +169,7 @@ def process_openhim_transaction(
             "transport_duplicate_skipped",
             extra={
                 "transaction_id": transaction_id,
+                "channelID": payload.get("channelID") or payload.get("channel"),
                 "correlation_id": correlation_id,
             },
         )
@@ -158,12 +177,24 @@ def process_openhim_transaction(
 
     event = materialize_transaction(payload)
 
+    if event is None:
+        logger.warning(
+            "transport_transaction_materialization_failed",
+            extra={
+                "transaction_id": transaction_id,
+                "channelID": payload.get("channelID") or payload.get("channel"),
+                "correlation_id": correlation_id,
+            },
+        )
+        return transaction_id or "unknown", True
+
     store.upsert_event(event)
 
     logger.info(
         "transport_transaction_processed",
         extra={
             "transaction_id": transaction_id,
+            "channelID": payload.get("channelID") or payload.get("channel"),
             "correlation_id": correlation_id,
         },
     )
