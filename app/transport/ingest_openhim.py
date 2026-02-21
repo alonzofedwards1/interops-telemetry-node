@@ -78,7 +78,13 @@ def _build_request_url(req: dict[str, Any]) -> str:
     if querystring:
         qs = querystring if querystring.startswith("?") else "?" + querystring
 
-    base = f"http://{host}:{port}" if host and port else (f"http://{host}" if host else "")
+    if host and port:
+        base = f"http://{host}:{port}"
+    elif host:
+        base = f"http://{host}"
+    else:
+        base = ""
+
     return f"{base}{path}{qs}"
 
 

@@ -6,10 +6,12 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# Ensure project root is on sys.path
 ROOT_PATH = Path(__file__).resolve().parent.parent
 if str(ROOT_PATH) not in sys.path:
     sys.path.insert(0, str(ROOT_PATH))
 
+# Routers
 from app.api.auth import router as auth_router
 from app.api.committee_queue import router as committee_queue_router
 from app.api.findings import router as findings_router
@@ -22,18 +24,35 @@ from app.config.settings import get_settings
 from app.transport.ingest_openhim import validate_openhim_config
 from app.db.migrations import run_migrations
 
-logging.basicConfig(level=logging.INFO)
 
+# ---------------------------------------------------------
+# Logging
+# ---------------------------------------------------------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------
+# Settings
+# ---------------------------------------------------------
 settings = get_settings()
 
-app = FastAPI(title="InterOps Telemetry API")
+# ---------------------------------------------------------
+# FastAPI App
+# ---------------------------------------------------------
+app = FastAPI(
+    title="InterOps Telemetry API",
+    version="0.1.0",
+)
 
+# ---------------------------------------------------------
+# CORS
+# ---------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins,   # MUST be explicit
+    allow_origins=settings.allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=True,                   # Cookies enabled
+    allow_credentials=True,
 )
 
 app.include_router(auth_router, prefix="/api")
@@ -45,13 +64,27 @@ app.include_router(findings_router, prefix="/api")
 app.include_router(oids_router, prefix="/api")
 app.include_router(integration_health_router, prefix="/api")
 
+app.include_router(auth_router, prefix=API_PREFIX)
+app.include_router(committee_queue_router, prefix=API_PREFIX)
+app.include_router(telemetry_router, prefix=API_PREFIX)
+app.include_router(transport_router, prefix=API_PREFIX)
+app.include_router(pd_executions_router, prefix=API_PREFIX)
+app.include_router(findings_router, prefix=API_PREFIX)
+app.include_router(oids_router, prefix=API_PREFIX)
+app.include_router(integration_health_router, prefix=API_PREFIX)
 
+# ---------------------------------------------------------
+# Startup
+# ---------------------------------------------------------
 @app.on_event("startup")
 async def startup() -> None:
+    logger.info("Running DB migrations...")
     run_migrations()
     validate_openhim_config()
 
-
+# ---------------------------------------------------------
+# Health Check
+# ---------------------------------------------------------
 @app.get("/health")
 async def health():
     return {
@@ -62,7 +95,9 @@ async def health():
         "allowed_origins": settings.allowed_origins,
     }
 
-
+# ---------------------------------------------------------
+# Local Dev Entry
+# ---------------------------------------------------------
 if __name__ == "__main__":
     uvicorn.run(
         "app.main:app",
