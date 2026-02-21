@@ -10,6 +10,7 @@ from app.transport.materializer import materialize_transaction
 
 logger = logging.getLogger(__name__)
 
+
 # ---------------------------------------
 # Exceptions
 # ---------------------------------------
@@ -36,13 +37,12 @@ OPENHIM_LIMIT = int(os.getenv("OPENHIM_LIMIT", "200"))
 def _extract_transaction_id(payload: dict) -> str | None:
     """
     OpenHIM uses `_id` as the primary transaction identifier.
-    Some custom payloads may use `transactionID`.
-    We support both.
+    Some payloads may use `transactionID` or `id`.
     """
     return (
-        payload.get("transactionID")
-        or payload.get("_id")
-        or payload.get("id")
+            payload.get("transactionID")
+            or payload.get("_id")
+            or payload.get("id")
     )
 
 
@@ -52,8 +52,8 @@ def is_openhim_transaction(payload: dict) -> bool:
 
 def is_fhir_bundle(payload: dict) -> bool:
     return (
-        isinstance(payload, dict)
-        and payload.get("resourceType") == "Bundle"
+            isinstance(payload, dict)
+            and payload.get("resourceType") == "Bundle"
     )
 
 
@@ -75,15 +75,15 @@ def openhim_healthcheck() -> bool:
 # ---------------------------------------
 
 def ingest_openhim_transactions(
-    limit: int | None = None,
-    correlation_id: str | None = None,
+        limit: int | None = None,
+        correlation_id: str | None = None,
 ) -> dict[str, int]:
-
     limit = limit or OPENHIM_LIMIT
 
     try:
         response = requests.get(
-            f"{OPENHIM_BASE_URL}/transactions?limit={limit}",
+            f"{OPENHIM_BASE_URL}/transactions",
+            params={"limit": limit},
             auth=(OPENHIM_USERNAME, OPENHIM_PASSWORD),
             verify=OPENHIM_VERIFY_TLS,
             timeout=10,
@@ -98,23 +98,27 @@ def ingest_openhim_transactions(
 
     transactions = response.json()
 
-    # OpenHIM may wrap transactions inside a property depending on version
+    # Some OpenHIM versions wrap transactions in an object
     if isinstance(transactions, dict):
         transactions = transactions.get("transactions", [])
 
-    processed = 0
-    skipped = 0
+    if not isinstance(transactions, list):
+        transactions = []
 
     logger.info(
         "transport_transactions_pulled",
         extra={
-            "transaction_count": len(transactions) if isinstance(transactions, list) else 0,
+            "transaction_count": len(transactions),
             "correlation_id": correlation_id,
         },
     )
 
+    processed = 0
+    skipped = 0
+
     for tx in transactions:
         tx_id = _extract_transaction_id(tx) or "unknown"
+
         logger.info(
             "transport_transaction_processing_started",
             extra={
@@ -123,20 +127,23 @@ def ingest_openhim_transactions(
                 "correlation_id": correlation_id,
             },
         )
+
         try:
             tx_id, was_skipped = process_openhim_transaction(
                 tx,
                 correlation_id=correlation_id,
             )
+
             if was_skipped:
                 skipped += 1
             else:
                 processed += 1
+
         except Exception as exc:
-            logger.warning(
+            logger.exception(
                 "transport_transaction_processing_failed",
                 extra={
-                    "error": str(exc),
+                    "transaction_id": tx_id,
                     "correlation_id": correlation_id,
                 },
             )
@@ -152,14 +159,19 @@ def ingest_openhim_transactions(
 # ---------------------------------------
 
 def process_openhim_transaction(
-    payload: dict,
-    correlation_id: str | None = None,
+        payload: dict,
+        correlation_id: str | None = None,
 ) -> tuple[str, bool]:
-
     transaction_id = _extract_transaction_id(payload)
 
     if not transaction_id:
-        transaction_id = "unknown"
+        logger.warning(
+            "transport_transaction_missing_id",
+            extra={
+                "correlation_id": correlation_id,
+            },
+        )
+        return "unknown", True
 
     store = TransportEventStore()
 
@@ -186,9 +198,31 @@ def process_openhim_transaction(
                 "correlation_id": correlation_id,
             },
         )
-        return transaction_id or "unknown", True
+        return transaction_id, True
 
-    store.upsert_event(event)
+    event_dict = event.model_dump()
+
+    flattened = {
+        "transaction_id": event_dict["transaction_id"],
+        "channel": event_dict["channel"],
+        "request_method": event_dict["request"]["method"],
+        "request_url": event_dict["request"]["url"],
+        "request_headers": event_dict["request"]["headers"],
+        "response_status": event_dict["response"]["status"],
+        "response_duration_ms": event_dict["response"]["duration_ms"],
+        "source_ip": event_dict["source_ip"],
+        "timestamp": event_dict["timestamp"],
+        "cert_subject_cn": None,
+        "cert_subject_san": None,
+        "cert_issuer_cn": None,
+        "cert_not_before": None,
+        "cert_not_after": None,
+        "cert_serial": None,
+        "cert_sha256": None,
+        "cert_status": None,
+    }
+
+    store.upsert_event(flattened)
 
     logger.info(
         "transport_transaction_processed",
