@@ -79,10 +79,9 @@ def openhim_healthcheck() -> bool:
 
 
 def ingest_openhim_transactions(
-    limit: int | None = None,
-    correlation_id: str | None = None,
+        limit: int | None = None,
+        correlation_id: str | None = None,
 ) -> dict[str, int]:
-
     limit = limit or OPENHIM_LIMIT
 
     try:
@@ -102,6 +101,17 @@ def ingest_openhim_transactions(
 
     if isinstance(transactions, dict):
         transactions = transactions.get("transactions", [])
+
+    if not isinstance(transactions, list):
+        transactions = []
+
+    logger.info(
+        "transport_transactions_pulled",
+        extra={
+            "transaction_count": len(transactions),
+            "correlation_id": correlation_id,
+        },
+    )
 
     processed = 0
     skipped = 0
@@ -129,13 +139,14 @@ def ingest_openhim_transactions(
                 tx,
                 correlation_id=correlation_id,
             )
+
             if was_skipped:
                 skipped += 1
             else:
                 processed += 1
             tx_id = tx_id_result
         except Exception as exc:
-            logger.warning(
+            logger.exception(
                 "transport_transaction_processing_failed",
                 extra={
                     "transaction_id": tx_id or "unknown",
