@@ -1,5 +1,6 @@
 from typing import Any
 from psycopg2.extras import Json
+from psycopg2 import Error
 
 from app.db.connection import get_connection
 
@@ -73,8 +74,8 @@ class TransportEventStore:
                         event.get("request_method"),
                         event.get("request_url"),
                         Json(event.get("request_headers") or {}),
-                        event.get("response_status"),
-                        event.get("response_duration_ms"),
+                        int(event.get("response_status") or 0),
+                        int(event.get("response_duration_ms") or 0),
                         event.get("source_ip"),
                         event.get("timestamp"),
                         event.get("cert_subject_cn"),
@@ -89,6 +90,10 @@ class TransportEventStore:
                 )
 
             conn.commit()
+
+        except Error:
+            conn.rollback()
+            raise
 
         finally:
             conn.close()
