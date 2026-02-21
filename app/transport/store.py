@@ -6,6 +6,18 @@ from app.db.connection import get_connection
 
 class TransportEventStore:
 
+    def transaction_exists(self, transaction_id: str) -> bool:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM transport_events WHERE transaction_id = %s LIMIT 1",
+                    (transaction_id,),
+                )
+                return cur.fetchone() is not None
+        finally:
+            conn.close()
+
     def upsert_event(self, event: dict[str, Any]) -> None:
         conn = get_connection()
 

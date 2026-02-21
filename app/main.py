@@ -20,9 +20,8 @@ from app.api.oids import router as oids_router
 from app.api.pd_executions import router as pd_executions_router
 from app.api.telemetry import router as telemetry_router
 from app.api.transport_routes import router as transport_router
-
-# Config & DB
 from app.config.settings import get_settings
+from app.transport.ingest_openhim import validate_openhim_config
 from app.db.migrations import run_migrations
 
 
@@ -56,13 +55,14 @@ app.add_middleware(
     allow_credentials=True,
 )
 
-# ---------------------------------------------------------
-# API Routers
-# NOTE:
-# DO NOT include "/api" inside individual route decorators.
-# We define it once here.
-# ---------------------------------------------------------
-API_PREFIX = "/api"
+app.include_router(auth_router, prefix="/api")
+app.include_router(committee_queue_router, prefix="/api")
+app.include_router(telemetry_router, prefix="/api")
+app.include_router(transport_router)
+app.include_router(pd_executions_router, prefix="/api")
+app.include_router(findings_router, prefix="/api")
+app.include_router(oids_router, prefix="/api")
+app.include_router(integration_health_router, prefix="/api")
 
 app.include_router(auth_router, prefix=API_PREFIX)
 app.include_router(committee_queue_router, prefix=API_PREFIX)
@@ -80,7 +80,7 @@ app.include_router(integration_health_router, prefix=API_PREFIX)
 async def startup() -> None:
     logger.info("Running DB migrations...")
     run_migrations()
-    logger.info("Startup complete.")
+    validate_openhim_config()
 
 # ---------------------------------------------------------
 # Health Check

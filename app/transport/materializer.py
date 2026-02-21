@@ -8,6 +8,13 @@ from typing import Any
 from .models import TransportEvent, TransportRequest, TransportResponse
 
 
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _as_datetime(value: Any) -> datetime:
     """Convert known timestamp formats into timezone-aware UTC datetime."""
 
@@ -45,12 +52,12 @@ def materialize_transaction(raw: dict[str, Any]) -> TransportEvent:
             headers=(request_data.get("headers") or {}),
         ),
         response=TransportResponse(
-            status=int(response_data.get("status") or response_data.get("statusCode") or 0),
-            duration_ms=int(
+            status=_as_int(response_data.get("status") or response_data.get("statusCode"), 0),
+            duration_ms=_as_int(
                 response_data.get("duration")
                 or response_data.get("duration_ms")
-                or raw.get("responseTime")
-                or 0
+                or raw.get("responseTime"),
+                0,
             ),
         ),
         source_ip=(request_data.get("clientIP") or raw.get("clientIP") or None),
