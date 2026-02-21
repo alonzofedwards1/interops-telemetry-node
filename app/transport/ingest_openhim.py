@@ -12,14 +12,20 @@ from app.transport.store import TransportEventStore
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
+
 def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
     if not ts:
         return None
     try:
         if ts.endswith("Z"):
             ts = ts.replace("Z", "+00:00")
-        return datetime.fromisoformat(ts)
+        parsed = datetime.fromisoformat(ts)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
     except Exception:
+        logger.debug("Failed to parse timestamp: %s", ts)
         return None
 
 
@@ -40,7 +46,13 @@ def _build_request_url(req: Dict[str, Any]) -> str:
     if querystring:
         qs = querystring if querystring.startswith("?") else "?" + querystring
 
-    base = f"http://{host}:{port}" if host and port else (f"http://{host}" if host else "")
+    if host and port:
+        base = f"http://{host}:{port}"
+    elif host:
+        base = f"http://{host}"
+    else:
+        base = ""
+
     return f"{base}{path}{qs}"
 
 
@@ -52,7 +64,28 @@ def _extract_host_port(request_url: str) -> tuple[Optional[str], Optional[int]]:
         return None, None
 
 
+def _should_probe_cert(host: Optional[str], port: Optional[int]) -> bool:
+    """
+    Only probe TLS if port looks like HTTPS.
+    Prevents wasting time probing HTTP-only services.
+    """
+    if not host or not port:
+        return False
+    return port in (443, 8443)
+
+
+# ---------------------------------------------------------------------
+# Main Ingest
+# ---------------------------------------------------------------------
+
 def ingest_openhim_transactions() -> None:
+    """
+    Pull transactions from OpenHIM and store ONLY transport-layer
+    information into transport_events table.
+
+    This function intentionally does NOT touch telemetry_events.
+    """
+
     store = TransportEventStore()
 
     base_url = os.getenv("OPENHIM_BASE_URL", "https://localhost:8080").rstrip("/")
@@ -76,7 +109,8 @@ def ingest_openhim_transactions() -> None:
 
     if response.status_code != 200:
         raise RuntimeError(
-            f"OpenHIM /transactions failed: {response.status_code} {response.text[:300]}"
+            f"OpenHIM /transactions failed: "
+            f"{response.status_code} {response.text[:300]}"
         )
 
     transactions = response.json()
@@ -107,17 +141,31 @@ def ingest_openhim_transactions() -> None:
 
             req_ts = _parse_ts(req.get("timestamp"))
             res_ts = _parse_ts(res.get("timestamp"))
+
             duration_ms = _calc_duration_ms(req_ts, res_ts)
             status = int(res.get("status") or 0)
 
-            # TLS cert probe
+            # -------------------------------------------------------------
+            # TLS Certificate Probe (Transport Layer Only)
+            # -------------------------------------------------------------
+
             host, port = _extract_host_port(req_url)
             cert = None
-            if host and port:
+
+            if _should_probe_cert(host, port):
                 key = (host, port)
                 if key not in cert_cache:
-                    cert_cache[key] = probe_server_cert(host, port)
+                    try:
+                        cert_cache[key] = probe_server_cert(host, port)
+                    except Exception:
+                        logger.debug("Cert probe failed for %s:%s", host, port)
+                        cert_cache[key] = None
+
                 cert = cert_cache[key]
+
+            # -------------------------------------------------------------
+            # Transport Event Payload
+            # -------------------------------------------------------------
 
             event = {
                 "transaction_id": str(tx_id),
@@ -129,6 +177,8 @@ def ingest_openhim_transactions() -> None:
                 "response_duration_ms": duration_ms,
                 "source_ip": str(source_ip) if source_ip else None,
                 "timestamp": req_ts or datetime.now(timezone.utc),
+
+                # TLS Metadata
                 "cert_subject_cn": getattr(cert, "subject_cn", None) if cert else None,
                 "cert_subject_san": getattr(cert, "subject_san", None) if cert else None,
                 "cert_issuer_cn": getattr(cert, "issuer_cn", None) if cert else None,
@@ -142,6 +192,11 @@ def ingest_openhim_transactions() -> None:
             store.upsert_event(event)
 
         except Exception as e:
-            logger.error("Failed processing transaction %s: %s", tx.get("_id"), e)
+            logger.error(
+                "Failed processing transaction %s: %s",
+                tx.get("_id"),
+                e,
+                exc_info=True,
+            )
 
-    logger.info("OpenHIM ingest complete.")
+    logger.info("OpenHIM transport ingest complete.")
