@@ -117,3 +117,45 @@ class ProcessOpenHIMTransactionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _FakeResponse:
+    def __init__(self, status_code: int, payload):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class IngestOpenHIMTransactionsTests(unittest.TestCase):
+    @patch("app.transport.ingest_openhim.process_openhim_transaction")
+    @patch("app.transport.ingest_openhim.requests.get")
+    def test_pull_supports_results_envelope(self, mock_get, mock_process) -> None:
+        from app.transport.ingest_openhim import ingest_openhim_transactions
+
+        mock_get.side_effect = [
+            _FakeResponse(200, {"results": [{"_id": "tx-1", "request": {}, "response": {}}]}),
+            _FakeResponse(200, {"results": []}),
+        ]
+        mock_process.return_value = ("tx-1", False)
+
+        result = ingest_openhim_transactions(limit=1)
+
+        self.assertEqual(result, {"processed": 1, "skipped": 0})
+        self.assertEqual(mock_process.call_count, 1)
+
+    @patch("app.transport.ingest_openhim.process_openhim_transaction")
+    @patch("app.transport.ingest_openhim.requests.get")
+    def test_pull_counts_processing_exceptions_as_skipped(self, mock_get, mock_process) -> None:
+        from app.transport.ingest_openhim import ingest_openhim_transactions
+
+        mock_get.side_effect = [
+            _FakeResponse(200, {"transactions": [{"_id": "tx-1", "request": {}, "response": {}}]}),
+            _FakeResponse(200, {"transactions": []}),
+        ]
+        mock_process.side_effect = RuntimeError("db down")
+
+        result = ingest_openhim_transactions(limit=1)
+
+        self.assertEqual(result, {"processed": 0, "skipped": 1})
