@@ -42,10 +42,24 @@ TRANSPORT_CONFIG = OpenHIMTransportConfig(
     tls_port=int(os.getenv("OPENHIM_TLS_PORT", "5001")),
 )
 OPENHIM_LIMIT = int(os.getenv("OPENHIM_LIMIT", "200"))
+OPENHIM_MAX_PAGES = int(os.getenv("OPENHIM_MAX_PAGES", "20"))
 
 
 def _extract_transaction_id(payload: dict) -> str | None:
     return payload.get("transactionID") or payload.get("_id") or payload.get("id")
+
+
+def _extract_transactions(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+
+    if isinstance(payload, dict):
+        for key in ("transactions", "results", "data"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+
+    return []
 
 
 def is_openhim_transaction(payload: dict) -> bool:
@@ -84,26 +98,56 @@ def ingest_openhim_transactions(
 ) -> dict[str, int]:
     limit = limit or OPENHIM_LIMIT
 
-    try:
-        response = requests.get(
-            f"{TRANSPORT_CONFIG.api_base_url}/transactions?limit={limit}",
-            auth=(TRANSPORT_CONFIG.api_username, TRANSPORT_CONFIG.api_password),
-            verify=TRANSPORT_CONFIG.api_verify_tls,
-            timeout=10,
+    transactions: list[dict[str, Any]] = []
+    seen_transaction_ids: set[str] = set()
+    skip = 0
+
+    for page_number in range(OPENHIM_MAX_PAGES):
+        try:
+            response = requests.get(
+                f"{TRANSPORT_CONFIG.api_base_url}/transactions",
+                params={"limit": limit, "skip": skip},
+                auth=(TRANSPORT_CONFIG.api_username, TRANSPORT_CONFIG.api_password),
+                verify=TRANSPORT_CONFIG.api_verify_tls,
+                timeout=10,
+            )
+        except Exception as exc:
+            raise OpenHIMUnavailableError(f"OpenHIM unreachable: {exc}")
+
+        if response.status_code != 200:
+            raise OpenHIMUnavailableError(f"OpenHIM returned {response.status_code}")
+
+        page_transactions = _extract_transactions(response.json())
+
+        if not page_transactions:
+            break
+
+        added = 0
+        for tx in page_transactions:
+            tx_id = _extract_transaction_id(tx)
+            if tx_id and tx_id in seen_transaction_ids:
+                continue
+
+            transactions.append(tx)
+            if tx_id:
+                seen_transaction_ids.add(tx_id)
+            added += 1
+
+        logger.info(
+            "transport_transactions_page_pulled",
+            extra={
+                "page_number": page_number,
+                "page_skip": skip,
+                "page_count": len(page_transactions),
+                "added_count": added,
+                "correlation_id": correlation_id,
+            },
         )
-    except Exception as exc:
-        raise OpenHIMUnavailableError(f"OpenHIM unreachable: {exc}")
 
-    if response.status_code != 200:
-        raise OpenHIMUnavailableError(f"OpenHIM returned {response.status_code}")
+        if len(page_transactions) < limit:
+            break
 
-    transactions = response.json()
-
-    if isinstance(transactions, dict):
-        transactions = transactions.get("transactions", [])
-
-    if not isinstance(transactions, list):
-        transactions = []
+        skip += limit
 
     logger.info(
         "transport_transactions_pulled",
@@ -115,14 +159,6 @@ def ingest_openhim_transactions(
 
     processed = 0
     skipped = 0
-
-    logger.info(
-        "transport_transactions_pulled",
-        extra={
-            "transaction_count": len(transactions) if isinstance(transactions, list) else 0,
-            "correlation_id": correlation_id,
-        },
-    )
 
     for tx in transactions:
         tx_id = _extract_transaction_id(tx) if isinstance(tx, dict) else None
@@ -146,6 +182,7 @@ def ingest_openhim_transactions(
                 processed += 1
             tx_id = tx_id_result
         except Exception as exc:
+            skipped += 1
             logger.exception(
                 "transport_transaction_processing_failed",
                 extra={

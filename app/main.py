@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 # Ensure project root is on sys.path
@@ -86,6 +86,27 @@ async def health():
         "environment": settings.environment,
         "allowed_origins": settings.allowed_origins,
     }
+
+
+@app.api_route("/test", methods=["GET", "POST"])
+async def test_endpoint(request: Request):
+    if request.method == "GET":
+        return {"message": "test endpoint working"}
+
+    content_type = request.headers.get("content-type", "").lower()
+    if "application/json" not in content_type:
+        raise HTTPException(status_code=400, detail="Content-Type must be application/json")
+
+    body = await request.body()
+    if not body.strip():
+        raise HTTPException(status_code=400, detail="Request body cannot be empty")
+
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    return {"received": payload}
 
 # ---------------------------------------------------------
 # Local Dev Entry

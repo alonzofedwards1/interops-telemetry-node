@@ -94,6 +94,40 @@ CREATE TABLE IF NOT EXISTS oid_directory (
 CREATE INDEX IF NOT EXISTS idx_oid_directory_status ON oid_directory(status);
 CREATE INDEX IF NOT EXISTS idx_oid_directory_last_seen ON oid_directory(last_seen_at);
 
+
+CREATE TABLE IF NOT EXISTS endpoints (
+    endpoint_id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    host TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    scheme TEXT NOT NULL,
+    service_type TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_endpoints_scheme_host_port ON endpoints(scheme, host, port);
+
+CREATE TABLE IF NOT EXISTS certificates (
+    cert_id BIGSERIAL PRIMARY KEY,
+    fingerprint_sha1 TEXT UNIQUE NOT NULL,
+    subject_cn TEXT,
+    issuer_cn TEXT,
+    not_before TIMESTAMPTZ,
+    not_after TIMESTAMPTZ,
+    pem TEXT,
+    first_seen_at TIMESTAMPTZ DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS endpoint_cert_observations (
+    endpoint_id BIGINT NOT NULL REFERENCES endpoints(endpoint_id) ON DELETE CASCADE,
+    cert_id BIGINT NOT NULL REFERENCES certificates(cert_id) ON DELETE CASCADE,
+    observed_at TIMESTAMPTZ NOT NULL,
+    source TEXT,
+    PRIMARY KEY (endpoint_id, cert_id, observed_at)
+);
+
 CREATE TABLE IF NOT EXISTS transport_events (
     id BIGSERIAL PRIMARY KEY,
     transaction_id VARCHAR(128) UNIQUE NOT NULL,
@@ -104,7 +138,17 @@ CREATE TABLE IF NOT EXISTS transport_events (
     response_status INTEGER NOT NULL,
     response_duration_ms INTEGER NOT NULL,
     source_ip VARCHAR(64),
-    timestamp TIMESTAMPTZ NOT NULL
+    timestamp TIMESTAMPTZ NOT NULL,
+    cert_subject_cn VARCHAR(255),
+    cert_subject_san TEXT,
+    cert_issuer_cn VARCHAR(255),
+    cert_not_before TIMESTAMPTZ,
+    cert_not_after TIMESTAMPTZ,
+    cert_serial VARCHAR(255),
+    cert_sha256 VARCHAR(255),
+    cert_status VARCHAR(32),
+    endpoint_id BIGINT REFERENCES endpoints(endpoint_id),
+    cert_id BIGINT REFERENCES certificates(cert_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_transport_events_transaction_id ON transport_events(transaction_id);
@@ -112,5 +156,18 @@ CREATE INDEX IF NOT EXISTS idx_transport_events_channel ON transport_events(chan
 CREATE INDEX IF NOT EXISTS idx_transport_events_response_status ON transport_events(response_status);
 CREATE INDEX IF NOT EXISTS idx_transport_events_response_duration_ms ON transport_events(response_duration_ms);
 CREATE INDEX IF NOT EXISTS idx_transport_events_timestamp ON transport_events(timestamp);
+
+
+ALTER TABLE transport_events ADD COLUMN IF NOT EXISTS cert_subject_cn VARCHAR(255);
+ALTER TABLE transport_events ADD COLUMN IF NOT EXISTS cert_subject_san TEXT;
+ALTER TABLE transport_events ADD COLUMN IF NOT EXISTS cert_issuer_cn VARCHAR(255);
+ALTER TABLE transport_events ADD COLUMN IF NOT EXISTS cert_not_before TIMESTAMPTZ;
+ALTER TABLE transport_events ADD COLUMN IF NOT EXISTS cert_not_after TIMESTAMPTZ;
+ALTER TABLE transport_events ADD COLUMN IF NOT EXISTS cert_serial VARCHAR(255);
+ALTER TABLE transport_events ADD COLUMN IF NOT EXISTS cert_sha256 VARCHAR(255);
+ALTER TABLE transport_events ADD COLUMN IF NOT EXISTS cert_status VARCHAR(32);
+ALTER TABLE transport_events ADD COLUMN IF NOT EXISTS endpoint_id BIGINT;
+ALTER TABLE transport_events ADD COLUMN IF NOT EXISTS cert_id BIGINT;
+
 
 COMMIT;
