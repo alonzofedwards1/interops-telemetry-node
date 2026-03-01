@@ -108,125 +108,6 @@ def _parse_iso_timestamp(value: str, field_name: str) -> datetime:
         raise HTTPException(status_code=400, detail=f"{field_name} must be a valid ISO timestamp") from exc
 
 
-@router.get("/api/messages")
-async def list_messages(
-    limit: int = 100,
-    source: str | None = None,
-    status: str | None = None,
-    environment: str | None = None,
-):
-    """
-    Unified message monitor endpoint.
-    Returns normalized transport + telemetry events.
-    """
-
-    normalized_source = source.lower() if source else None
-    rows: list[dict[str, Any]] = []
-
-    conn = get_connection()
-    try:
-        if normalized_source in (None, "transport"):
-            with conn.cursor() as cursor:
-                transport_query = """
-                    SELECT
-                        id,
-                        transaction_id,
-                        channel,
-                        response_status,
-                        timestamp,
-                        NULL::TEXT AS environment,
-                        cert_sha256 AS cert_thumbprint,
-                        cert_not_after
-                    FROM transport_events
-                    WHERE 1 = 1
-                """
-                transport_params: list[Any] = []
-
-                if environment:
-                    transport_query += " AND 1 = 0"
-
-                transport_query += " ORDER BY timestamp DESC LIMIT %s"
-                transport_params.append(limit)
-                cursor.execute(transport_query, tuple(transport_params))
-                transport_rows = cursor.fetchall()
-
-            for transport in transport_rows:
-                normalized_status = _normalize_transport_status(transport["response_status"])
-                certificate = None
-                if transport["cert_thumbprint"]:
-                    certificate = {
-                        "thumbprint": transport["cert_thumbprint"],
-                        "status": _certificate_status(transport["cert_not_after"]),
-                    }
-
-                rows.append(
-                    {
-                        "id": transport["id"],
-                        "source": "transport",
-                        "timestamp": transport["timestamp"],
-                        "status": normalized_status,
-                        "eventType": "Transport",
-                        "requestId": None,
-                        "transactionId": transport["transaction_id"],
-                        "channelId": transport["channel"],
-                        "interactionId": transport["transaction_id"],
-                        "durationMs": None,
-                        "environment": transport["environment"],
-                        "certificate": certificate,
-                    }
-                )
-
-        if normalized_source in (None, "telemetry"):
-            with conn.cursor() as cursor:
-                telemetry_query = """
-                    SELECT
-                        event_id AS id,
-                        timestamp_utc AS timestamp,
-                        status,
-                        event_type,
-                        correlation_request_id AS request_id,
-                        duration_ms,
-                        source_environment AS environment
-                    FROM telemetry_events
-                    WHERE 1 = 1
-                """
-                telemetry_params: list[Any] = []
-                if environment:
-                    telemetry_query += " AND source_environment = %s"
-                    telemetry_params.append(environment)
-
-                telemetry_query += " ORDER BY timestamp_utc DESC LIMIT %s"
-                telemetry_params.append(limit)
-                cursor.execute(telemetry_query, tuple(telemetry_params))
-                telemetry_rows = cursor.fetchall()
-
-            for telemetry in telemetry_rows:
-                rows.append(
-                    {
-                        "id": telemetry["id"],
-                        "source": "telemetry",
-                        "timestamp": telemetry["timestamp"],
-                        "status": telemetry["status"],
-                        "eventType": telemetry["event_type"],
-                        "requestId": telemetry["request_id"],
-                        "transactionId": None,
-                        "channelId": None,
-                        "interactionId": telemetry["request_id"],
-                        "durationMs": telemetry["duration_ms"],
-                        "environment": telemetry["environment"],
-                        "certificate": None,
-                    }
-                )
-    finally:
-        conn.close()
-
-    if status:
-        rows = [event for event in rows if (event.get("status") or "").lower() == status.lower()]
-
-    rows.sort(key=lambda event: event.get("timestamp") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-    return rows[:limit]
-
-
 @router.get("/api/message-monitor", response_model=MessageMonitorResponse)
 async def get_message_monitor(
     limit: str = Query(default="25"),
@@ -237,11 +118,15 @@ async def get_message_monitor(
     channel: str | None = Query(default=None),
     db: Any = Depends(get_db),
 ) -> MessageMonitorResponse:
+
     parsed_limit = _parse_limit(limit)
     parsed_offset = _parse_offset(offset)
 
     if status is not None and status not in _ALLOWED_CERT_STATUSES:
-        raise HTTPException(status_code=400, detail="status must be one of: Valid, Expired, Expiring Soon")
+        raise HTTPException(
+            status_code=400,
+            detail="status must be one of: Valid, Expired, Expiring Soon",
+        )
 
     start_dt = _parse_iso_timestamp(start_time, "startTime") if start_time else None
     end_dt = _parse_iso_timestamp(end_time, "endTime") if end_time else None
@@ -281,11 +166,15 @@ async def get_message_monitor(
         FROM transport_events t
         LEFT JOIN endpoints e ON t.endpoint_id = e.endpoint_id
         LEFT JOIN certificates c ON t.cert_id = c.cert_id
-        LEFT JOIN endpoint_cert_observations o ON c.cert_id = o.cert_id
+        LEFT JOIN (
+            SELECT cert_id, MAX(source) AS source
+            FROM endpoint_cert_observations
+            GROUP BY cert_id
+        ) o ON c.cert_id = o.cert_id
     """
 
     data_sql = f"""
-        SELECT
+        SELECT DISTINCT ON (t.transaction_id)
             t.transaction_id,
             t.channel,
             t.response_status,
@@ -318,25 +207,37 @@ async def get_message_monitor(
             COALESCE(o.source, 'unknown') AS detected_via
         {from_sql}
         {where_sql}
-        ORDER BY t.timestamp DESC
+        ORDER BY t.transaction_id, t.timestamp DESC
         LIMIT ${len(filter_values) + 1}
         OFFSET ${len(filter_values) + 2}
     """
 
     count_sql = f"""
-        SELECT COUNT(*) AS total
+        SELECT COUNT(DISTINCT t.transaction_id) AS total
         {from_sql}
         {where_sql}
     """
 
     try:
-        data_rows = await db.fetch(data_sql, *(filter_values + [parsed_limit, parsed_offset]))
+        data_rows = await db.fetch(
+            data_sql,
+            *(filter_values + [parsed_limit, parsed_offset]),
+        )
+
         total = await db.fetchval(count_sql, *filter_values)
+
     except Exception:
         logger.exception("Failed to fetch message monitor data")
-        raise HTTPException(status_code=500, detail="Failed to fetch message monitor data")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to fetch message monitor data",
+        )
 
     return MessageMonitorResponse(
         data=[MessageMonitorRow(**dict(row)) for row in data_rows],
-        pagination=MessageMonitorPagination(total=int(total or 0), limit=parsed_limit, offset=parsed_offset),
+        pagination=MessageMonitorPagination(
+            total=int(total or 0),
+            limit=parsed_limit,
+            offset=parsed_offset,
+        ),
     )
