@@ -25,7 +25,7 @@ def _normalize_database_url(database_url: str) -> str:
 
 
 class PostgresConnection:
-    """Thin compatibility wrapper exposing a sqlite-like API over psycopg2."""
+    """Thin compatibility wrapper exposing a DB-API-style interface over psycopg2."""
 
     def __init__(self, database_url: str) -> None:
         self._conn = psycopg2.connect(_normalize_database_url(database_url), cursor_factory=DictCursor)
