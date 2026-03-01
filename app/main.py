@@ -16,6 +16,7 @@ from app.api.auth import router as auth_router
 from app.api.committee_queue import router as committee_queue_router
 from app.api.findings import router as findings_router
 from app.api.integration_health import router as integration_health_router
+from app.api.messages import router as messages_router
 from app.api.oids import router as oids_router
 from app.api.pd_executions import router as pd_executions_router
 from app.api.telemetry import router as telemetry_router
@@ -61,6 +62,7 @@ app.include_router(auth_router, prefix="/api")
 app.include_router(committee_queue_router, prefix="/api")
 app.include_router(telemetry_router, prefix="/api")
 app.include_router(transport_router)
+app.include_router(messages_router)
 app.include_router(pd_executions_router, prefix="/api")
 app.include_router(findings_router, prefix="/api")
 app.include_router(oids_router, prefix="/api")
