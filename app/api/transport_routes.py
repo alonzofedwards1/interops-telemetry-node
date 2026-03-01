@@ -8,11 +8,12 @@ from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from app.db.connection import get_connection
 from app.transport.ingest_openhim import (
     OpenHIMUnavailableError,
     ingest_openhim_transactions,
-    is_openhim_transaction,
     is_fhir_bundle,
+    is_openhim_transaction,
     openhim_healthcheck,
     process_openhim_transaction,
 )
@@ -115,3 +116,60 @@ async def transport_openhim_health() -> OpenHIMHealthResponse:
             content=OpenHIMHealthResponse(status="degraded", source="openhim").model_dump(),
         )
     return OpenHIMHealthResponse(status="ok", source="openhim")
+
+
+@router.get("/api/transport/events")
+async def list_transport_events(
+    limit: int = 100,
+    source: str | None = None,
+    status: str | None = None,
+    environment: str | None = None,
+):
+    """
+    Returns transport events ordered by newest first.
+    """
+
+    if source and source.lower() != "transport":
+        return []
+
+    if environment:
+        return []
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            query = """
+                SELECT
+                    id,
+                    transaction_id,
+                    channel,
+                    response_status,
+                    timestamp,
+                    NULL::TEXT AS environment,
+                    cert_sha256 AS cert_thumbprint,
+                    cert_not_before,
+                    cert_not_after
+                FROM transport_events
+                WHERE 1 = 1
+            """
+            params: list[Any] = []
+
+
+            if status:
+                normalized = status.lower()
+                if normalized == "success":
+                    query += " AND response_status BETWEEN 200 AND 299"
+                elif normalized == "error":
+                    query += " AND response_status BETWEEN 400 AND 599"
+                elif normalized == "warning":
+                    query += " AND (response_status < 200 OR response_status BETWEEN 300 AND 399 OR response_status > 599)"
+
+            query += " ORDER BY timestamp DESC LIMIT %s"
+            params.append(limit)
+
+            cursor.execute(query, tuple(params))
+            rows = cursor.fetchall()
+
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
