@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
+const { db: pgDb } = require('./db');
 
 /* ============================================================
    App / Config
@@ -261,6 +262,140 @@ app.get('/api/health/integrations', (_req, res) => {
       affectedPartners: Number(row.affectedPartners || 0),
     });
   });
+});
+
+/* ============================================================
+   Message Monitor (PostgreSQL)
+============================================================ */
+
+app.get('/api/message-monitor', requireAuth, async (req, res) => {
+  const parsedLimit = Number.parseInt(req.query.limit ?? '25', 10);
+  const parsedOffset = Number.parseInt(req.query.offset ?? '0', 10);
+
+  const limit = Number.isNaN(parsedLimit) ? 25 : Math.min(Math.max(parsedLimit, 1), 500);
+  const offset = Number.isNaN(parsedOffset) ? 0 : Math.max(parsedOffset, 0);
+
+  const { startTime, endTime, status, channel } = req.query;
+  const allowedStatuses = new Set(['Valid', 'Expired', 'Expiring Soon']);
+
+  if (startTime && Number.isNaN(Date.parse(startTime))) {
+    return res.status(400).json({ error: 'Invalid startTime' });
+  }
+
+  if (endTime && Number.isNaN(Date.parse(endTime))) {
+    return res.status(400).json({ error: 'Invalid endTime' });
+  }
+
+  if (status && !allowedStatuses.has(status)) {
+    return res.status(400).json({ error: 'Invalid status' });
+  }
+
+  const filterValues = [];
+  const whereClauses = [];
+
+  const addFilter = (condition, value) => {
+    filterValues.push(value);
+    whereClauses.push(condition.replace('?', `$${filterValues.length}`));
+  };
+
+  if (startTime) {
+    addFilter('t.timestamp >= ?', startTime);
+  }
+
+  if (endTime) {
+    addFilter('t.timestamp <= ?', endTime);
+  }
+
+  if (status) {
+    addFilter(
+      `
+      CASE
+        WHEN c.not_after IS NULL THEN 'Expired'
+        WHEN NOW() > c.not_after THEN 'Expired'
+        WHEN c.not_after - NOW() <= INTERVAL '30 days' THEN 'Expiring Soon'
+        ELSE 'Valid'
+      END = ?
+      `,
+      status,
+    );
+  }
+
+  if (channel) {
+    addFilter('t.channel = ?', channel);
+  }
+
+  const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+
+  const fromAndJoins = `
+    FROM transport_events t
+    LEFT JOIN endpoints e ON t.endpoint_id = e.endpoint_id
+    LEFT JOIN certificates c ON t.cert_id = c.cert_id
+    LEFT JOIN endpoint_cert_observations o ON c.cert_id = o.cert_id
+  `;
+
+  const dataSql = `
+    SELECT
+      t.transaction_id,
+      t.channel,
+      t.response_status,
+      t.timestamp AS transport_timestamp,
+      e.endpoint_id,
+      e.host,
+      e.port,
+      e.scheme,
+      c.cert_id,
+      c.subject_cn,
+      c.issuer_cn,
+      c.fingerprint_sha1,
+      c.not_before,
+      c.not_after,
+      c.first_seen_at,
+      c.last_seen_at,
+      (c.subject_cn = c.issuer_cn) AS is_self_signed,
+      CASE
+        WHEN c.not_after IS NOT NULL
+        THEN DATE_PART('day', c.not_after - NOW())
+        ELSE NULL
+      END AS days_until_expiration,
+      CASE
+        WHEN c.not_after IS NULL THEN 'Expired'
+        WHEN NOW() > c.not_after THEN 'Expired'
+        WHEN c.not_after - NOW() <= INTERVAL '30 days' THEN 'Expiring Soon'
+        ELSE 'Valid'
+      END AS certificate_status,
+      DATE_PART('year', AGE(NOW(), c.not_before)) AS cert_age_years,
+      COALESCE(o.source, 'unknown') AS detected_via
+    ${fromAndJoins}
+    ${whereSql}
+    ORDER BY t.timestamp DESC
+    LIMIT $${filterValues.length + 1}
+    OFFSET $${filterValues.length + 2}
+  `;
+
+  const countSql = `
+    SELECT COUNT(*)::int AS total
+    ${fromAndJoins}
+    ${whereSql}
+  `;
+
+  try {
+    const [dataResult, countResult] = await Promise.all([
+      pgDb.query(dataSql, [...filterValues, limit, offset]),
+      pgDb.query(countSql, filterValues),
+    ]);
+
+    return res.json({
+      data: dataResult.rows,
+      pagination: {
+        total: countResult.rows[0]?.total ?? 0,
+        limit,
+        offset,
+      },
+    });
+  } catch (error) {
+    console.error('[message-monitor] query failed', error);
+    return res.status(500).json({ error: 'Failed to fetch message monitor data' });
+  }
 });
 
 /* ============================================================
