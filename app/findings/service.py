@@ -144,3 +144,18 @@ def seed_demo_findings(execution_id: str) -> int:
         )
 
     return len(demo_findings)
+
+
+def create_finding(payload: FindingCreate) -> FindingOut:
+    add_or_update_finding(
+        id=payload.id,
+        execution_id=payload.executionId,
+        execution_type=payload.executionType,
+        severity=payload.severity,
+        category=payload.category,
+        summary=payload.summary,
+        technical_detail=payload.technicalDetail,
+        recommended_action=payload.recommendedAction,
+        status=payload.status,
+    )
+    return payload
