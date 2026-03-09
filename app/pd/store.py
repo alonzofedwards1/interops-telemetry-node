@@ -329,3 +329,29 @@ def list_executions(limit: int = 500) -> List[PDExecution]:
         )
         for row in rows
     ]
+
+
+def get_execution_telemetry_events(request_id: str) -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                event_id,
+                event_type,
+                timestamp_utc,
+                source_channel_id,
+                source_environment,
+                status,
+                duration_ms,
+                correlation_request_id,
+                raw_payload
+            FROM telemetry_events
+            WHERE correlation_request_id = ?
+            ORDER BY timestamp_utc ASC
+            """,
+            (request_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
