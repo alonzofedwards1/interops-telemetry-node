@@ -30,6 +30,9 @@ def get_settings() -> Settings:
     else:
         origins = DEFAULT_ALLOWED_ORIGINS
 
+    if "http://localhost:3000" not in origins:
+        origins.append("http://localhost:3000")
+
     return Settings(
         port=int(os.environ.get("TELEMETRY_PORT", DEFAULT_PORT)),
         database_url=os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL),

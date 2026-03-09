@@ -1,16 +1,11 @@
+import hashlib
 import secrets
 import time
-import hashlib
 
 from app.config.settings import get_settings
 from app.db.connection import get_connection
 
 settings = get_settings()
-
-
-def hash_password(password: str) -> str:
-    payload = f"{settings.auth_password_salt}:{password}"
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def hash_token(token: str) -> str:
