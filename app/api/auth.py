@@ -1,7 +1,6 @@
-import hmac
-import hashlib
 import logging
-from fastapi import APIRouter, Depends, Request, Response, HTTPException
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -9,6 +8,7 @@ from app.auth.dependencies import require_auth
 from app.auth.service import clear_session, issue_session
 from app.config.settings import get_settings
 from app.db.connection import get_connection
+from app.security.passwords import verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
@@ -18,11 +18,6 @@ logger = logging.getLogger(__name__)
 class LoginRequest(BaseModel):
     username: str
     password: str
-
-
-def hash_password(password: str) -> str:
-    raw = f"{settings.auth_password_salt}:{password}"
-    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 @router.post("/login")
@@ -35,22 +30,29 @@ async def login(payload: LoginRequest, response: Response):
     conn.close()
 
     if not row:
-        logger.warning("Login failed for unknown user", extra={"username": payload.username})
-        return JSONResponse(status_code=401, content={"error": "Invalid credentials"})
+        logger.warning(
+            "AUTH_LOGIN_FAILED_UNKNOWN_USER",
+            extra={"username": payload.username},
+        )
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    provided_hash = hash_password(payload.password)
     stored_hash = row["password_hash"]
 
-    is_password_match = (
-        len(stored_hash) == len(provided_hash)
-        and hmac.compare_digest(stored_hash, provided_hash)
-    )
+    try:
+        if not verify_password(payload.password, stored_hash):
+            logger.warning(
+                "AUTH_LOGIN_FAILED_BAD_PASSWORD",
+                extra={"username": payload.username, "userId": row["id"]},
+            )
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+    except ValueError:
+        logger.warning(
+            "AUTH_LOGIN_FAILED_INVALID_HASH",
+            extra={"username": payload.username, "userId": row["id"]},
+        )
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    if not is_password_match:
-        logger.warning("Login failed due to invalid password", extra={"username": payload.username})
-        return JSONResponse(status_code=401, content={"error": "Invalid credentials"})
-
-    token, expires_at = issue_session(row["id"])
+    token, _ = issue_session(row["id"])
 
     response.set_cookie(
         settings.auth_cookie_name,
@@ -59,9 +61,11 @@ async def login(payload: LoginRequest, response: Response):
         secure=settings.auth_cookie_secure,
         samesite="lax",
         max_age=settings.auth_session_ttl_seconds,
+        path="/",
     )
 
-    return {"username": payload.username, "expiresAt": expires_at}
+    logger.info("AUTH_LOGIN_SUCCESS", extra={"username": payload.username, "userId": row["id"]})
+    return {"success": True}
 
 
 @router.post("/logout")
@@ -75,6 +79,7 @@ async def logout(request: Request, user_id: int = Depends(require_auth)):
         httponly=True,
         secure=settings.auth_cookie_secure,
         samesite="lax",
+        path="/",
     )
     return response
 

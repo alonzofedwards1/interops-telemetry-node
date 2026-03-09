@@ -24,6 +24,7 @@ from app.api.transport_routes import router as transport_router
 
 from app.config.settings import get_settings
 from app.db.migrations import run_migrations
+from app.scripts.seed_admin import seed_admin_user
 
 # ---------------------------------------------------------
 # Logging
@@ -75,6 +76,8 @@ app.include_router(integration_health_router, prefix="/api")
 async def startup() -> None:
     logger.info("Running DB migrations...")
     run_migrations()
+    logger.info("Ensuring default admin account...")
+    seed_admin_user()
 
 # ---------------------------------------------------------
 # Health Check

@@ -1,21 +1,14 @@
-import hashlib
-import os
 from datetime import datetime, timezone
 
 from app.db.connection import get_connection
+from app.security.passwords import hash_password
 
-AUTH_PASSWORD_SALT = os.getenv("AUTH_PASSWORD_SALT", "dev_salt_123")
 ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "admin123"
+ADMIN_PASSWORD = "Admin123!"
 
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def hash_password(password: str) -> str:
-    combined = f"{AUTH_PASSWORD_SALT}:{password}"
-    return hashlib.sha256(combined.encode("utf-8")).hexdigest()
 
 
 def reset_admin() -> None:
@@ -36,9 +29,7 @@ def reset_admin() -> None:
 
     print("✅ Admin user reset")
     print("username: admin")
-    print("password: admin123")
-    print("salt used:", AUTH_PASSWORD_SALT)
-    print("hash:", password_hash)
+    print("password: Admin123!")
 
 
 if __name__ == "__main__":
