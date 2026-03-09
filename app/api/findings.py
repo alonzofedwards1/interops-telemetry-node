@@ -4,29 +4,19 @@ from typing import List
 from fastapi import APIRouter, Body, HTTPException, Query
 
 from app.config.settings import get_settings
-from app.findings.models import (
-    FindingCreate,
-    FindingOut,
-    FindingStatusUpdate,
-    FindingsCountOut,
-)
-from app.findings.repository import (
-    add_or_update_finding,
-    get_finding_by_id,
-    get_findings_counts,
-    list_findings,
-    update_finding_status,
+from app.findings.models import FindingCreate, FindingOut, FindingStatusUpdate, FindingsCountOut
+from app.findings.service import (
+    create_finding,
+    fetch_finding_by_id,
+    fetch_findings,
+    fetch_findings_count,
+    seed_demo_findings,
+    set_finding_status,
 )
 
 router = APIRouter(prefix="/findings", tags=["findings"])
 logger = logging.getLogger(__name__)
 settings = get_settings()
-
-
-def _resolve_org_name(source_oid: str | None, org_name: str | None) -> str | None:
-    if not source_oid:
-        return "—"
-    return org_name or "Unrecognized Organization"
 
 
 # ============================================================
@@ -54,7 +44,7 @@ async def get_findings(
     - If `limit` is provided → paginated results
     """
     try:
-        rows = list_findings(
+        return fetch_findings(
             limit=limit,
             offset=offset,
             severity=severity,
@@ -66,30 +56,6 @@ async def get_findings(
             sort=sort,
             order=order,
         )
-
-        return [
-            FindingOut(
-                id=row["id"],
-                executionId=row.get("execution_id"),
-                executionType=row.get("execution_type"),
-                severity=row["severity"],
-                category=row["category"],
-                summary=row["summary"],
-                technicalDetail=row.get("technical_detail"),
-                recommendedAction=row.get("recommended_action"),
-                status=row["status"],
-                relatedOid=row.get("source_oid"),
-                organization=_resolve_org_name(
-                    row.get("source_oid"),
-                    row.get("organization_name"),
-                ),
-                firstSeenAt=row.get("first_seen_at"),
-                lastSeenAt=row.get("last_seen_at"),
-                createdAt=row.get("created_at"),
-                updatedAt=row.get("updated_at"),
-            )
-            for row in rows
-        ]
 
     except Exception:
         logger.exception("Failed to list findings")
@@ -111,12 +77,11 @@ async def get_findings_count(
     This endpoint MUST be used by dashboard widgets.
     """
     try:
-        counts = get_findings_counts(
+        return fetch_findings_count(
             severity=severity,
             status=status,
             execution_type=execution_type,
         )
-        return FindingsCountOut(**counts)
 
     except Exception:
         logger.exception("Failed to get findings count")
@@ -130,30 +95,11 @@ async def get_findings_count(
 @router.get("/{finding_id}", response_model=FindingOut)
 async def get_finding(finding_id: str):
     try:
-        row = get_finding_by_id(finding_id)
-        if not row:
+        finding = fetch_finding_by_id(finding_id)
+        if not finding:
             raise HTTPException(status_code=404, detail="Finding not found")
 
-        return FindingOut(
-            id=row["id"],
-            executionId=row.get("execution_id"),
-            executionType=row.get("execution_type"),
-            severity=row["severity"],
-            category=row["category"],
-            summary=row["summary"],
-            technicalDetail=row.get("technical_detail"),
-            recommendedAction=row.get("recommended_action"),
-            status=row["status"],
-            relatedOid=row.get("source_oid"),
-            organization=_resolve_org_name(
-                row.get("source_oid"),
-                row.get("organization_name"),
-            ),
-            firstSeenAt=row.get("first_seen_at"),
-            lastSeenAt=row.get("last_seen_at"),
-            createdAt=row.get("created_at"),
-            updatedAt=row.get("updated_at"),
-        )
+        return finding
 
     except HTTPException:
         raise
@@ -169,34 +115,15 @@ async def get_finding(finding_id: str):
 @router.patch("/{finding_id}/status", response_model=FindingOut)
 async def update_status(finding_id: str, payload: FindingStatusUpdate):
     try:
-        row = update_finding_status(
+        finding = set_finding_status(
             finding_id=finding_id,
             status=payload.status,
         )
 
-        if not row:
+        if not finding:
             raise HTTPException(status_code=404, detail="Finding not found")
 
-        return FindingOut(
-            id=row["id"],
-            executionId=row.get("execution_id"),
-            executionType=row.get("execution_type"),
-            severity=row["severity"],
-            category=row["category"],
-            summary=row["summary"],
-            technicalDetail=row.get("technical_detail"),
-            recommendedAction=row.get("recommended_action"),
-            status=row["status"],
-            relatedOid=row.get("source_oid"),
-            organization=_resolve_org_name(
-                row.get("source_oid"),
-                row.get("organization_name"),
-            ),
-            firstSeenAt=row.get("first_seen_at"),
-            lastSeenAt=row.get("last_seen_at"),
-            createdAt=row.get("created_at"),
-            updatedAt=row.get("updated_at"),
-        )
+        return finding
 
     except HTTPException:
         raise
@@ -210,7 +137,7 @@ async def update_status(finding_id: str, payload: FindingStatusUpdate):
 # ============================================================
 
 @router.post("/seed-demo")
-async def seed_demo_findings(payload: dict = Body(None)):
+async def seed_demo_findings_endpoint(payload: dict = Body(None)):
     try:
         if settings.environment.lower() == "prod":
             raise HTTPException(status_code=403, detail="Not allowed in production")
@@ -220,59 +147,21 @@ async def seed_demo_findings(payload: dict = Body(None)):
             execution_id = payload.get("execution_id") or payload.get("executionId")
         execution_id = execution_id or "req-local-001"
 
-        demo_findings = [
-            FindingCreate(
-                id="finding-demo-001",
-                executionId=execution_id,
-                executionType="PD",
-                severity="critical",
-                category="Patient Match",
-                summary="No patient match found",
-                technicalDetail="MPI lookup returned 0 matches",
-                recommendedAction="Verify patient demographics and retry",
-                status="open",
-            ),
-            FindingCreate(
-                id="finding-demo-002",
-                executionId=execution_id,
-                executionType="PD",
-                severity="warning",
-                category="Latency",
-                summary="Execution exceeded expected latency",
-                technicalDetail="Observed duration > 2s threshold",
-                recommendedAction="Inspect downstream system response times",
-                status="acknowledged",
-            ),
-            FindingCreate(
-                id="finding-demo-003",
-                executionId=execution_id,
-                executionType="PD",
-                severity="info",
-                category="Audit",
-                summary="Request completed successfully",
-                technicalDetail=None,
-                recommendedAction=None,
-                status="resolved",
-            ),
-        ]
-
-        for finding in demo_findings:
-            add_or_update_finding(
-                id=finding.id,
-                execution_id=finding.executionId,
-                execution_type=finding.executionType,
-                severity=finding.severity,
-                category=finding.category,
-                summary=finding.summary,
-                technical_detail=finding.technicalDetail,
-                recommended_action=finding.recommendedAction,
-                status=finding.status,
-            )
-
-        return {"status": "ok", "count": len(demo_findings)}
+        count = seed_demo_findings(execution_id)
+        return {"status": "ok", "count": count}
 
     except HTTPException:
         raise
     except Exception:
         logger.exception("Failed to seed demo findings")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("", response_model=FindingOut)
+async def create_or_upsert_finding(payload: FindingCreate):
+    try:
+        create_finding(payload)
+        return payload
+    except Exception:
+        logger.exception("Failed to create/upsert finding")
         raise HTTPException(status_code=500, detail="Internal server error")
