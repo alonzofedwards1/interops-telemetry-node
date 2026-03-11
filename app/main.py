@@ -76,8 +76,6 @@ app.include_router(integration_health_router, prefix="/api")
 async def startup() -> None:
     logger.info("Running DB migrations...")
     run_migrations()
-    logger.info("Ensuring default admin account...")
-    seed_admin_user()
 
 # ---------------------------------------------------------
 # Health Check

@@ -11,23 +11,35 @@ from app.db.connection import get_connection
 from app.security.passwords import verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+
+# =========================================================
+# Models
+# =========================================================
 
 class LoginRequest(BaseModel):
     username: str
     password: str
 
 
+# =========================================================
+# Login
+# =========================================================
+
 @router.post("/login")
 async def login(payload: LoginRequest, response: Response):
     conn = get_connection()
-    row = conn.execute(
-        "SELECT id, password_hash FROM users WHERE username = ?",
-        (payload.username,),
-    ).fetchone()
-    conn.close()
+
+    try:
+        row = conn.execute(
+            "SELECT id, password_hash FROM users WHERE username = %s",
+            (payload.username,),
+        ).fetchone()
+    finally:
+        conn.close()
 
     if not row:
         logger.warning(
@@ -38,6 +50,12 @@ async def login(payload: LoginRequest, response: Response):
 
     stored_hash = row["password_hash"]
 
+    logger.info("LOGIN_DEBUG", extra={
+        "username": payload.username,
+        "password_input": payload.password,
+        "hash": stored_hash
+    })
+
     try:
         if not verify_password(payload.password, stored_hash):
             logger.warning(
@@ -45,6 +63,7 @@ async def login(payload: LoginRequest, response: Response):
                 extra={"username": payload.username, "userId": row["id"]},
             )
             raise HTTPException(status_code=401, detail="Invalid credentials")
+
     except ValueError:
         logger.warning(
             "AUTH_LOGIN_FAILED_INVALID_HASH",
@@ -52,37 +71,64 @@ async def login(payload: LoginRequest, response: Response):
         )
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    # -----------------------------------------------------
+    # Create session
+    # -----------------------------------------------------
+
     token, _ = issue_session(row["id"])
 
+    # -----------------------------------------------------
+    # Set session cookie
+    # -----------------------------------------------------
+
     response.set_cookie(
-        settings.auth_cookie_name,
-        token,
+        key=settings.auth_cookie_name,
+        value=token,
         httponly=True,
-        secure=settings.auth_cookie_secure,
+        secure=False,  # must be False for localhost
         samesite="lax",
         max_age=settings.auth_session_ttl_seconds,
         path="/",
     )
 
-    logger.info("AUTH_LOGIN_SUCCESS", extra={"username": payload.username, "userId": row["id"]})
+    logger.info(
+        "AUTH_LOGIN_SUCCESS",
+        extra={
+            "username": payload.username,
+            "userId": row["id"]
+        }
+    )
+
     return {"success": True}
 
+
+# =========================================================
+# Logout
+# =========================================================
 
 @router.post("/logout")
 async def logout(request: Request, user_id: int = Depends(require_auth)):
     token = request.cookies.get(settings.auth_cookie_name)
-    clear_session(token)
+
+    if token:
+        clear_session(token)
 
     response = JSONResponse(status_code=204, content={})
+
     response.delete_cookie(
-        settings.auth_cookie_name,
+        key=settings.auth_cookie_name,
         httponly=True,
-        secure=settings.auth_cookie_secure,
+        secure=False,
         samesite="lax",
         path="/",
     )
+
     return response
 
+
+# =========================================================
+# Session Check
+# =========================================================
 
 @router.get("/me")
 async def me(user_id: int = Depends(require_auth)):
