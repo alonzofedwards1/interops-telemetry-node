@@ -5,23 +5,15 @@ Usage:
 """
 
 from __future__ import annotations
-
-import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from app.config.settings import get_settings
 from app.db.connection import get_connection
+from app.security.passwords import hash_password
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _hash_password(password: str) -> str:
-    settings = get_settings()
-    payload = f"{settings.auth_password_salt}:{password}"
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def main() -> None:
@@ -194,7 +186,7 @@ def main() -> None:
             VALUES (?, ?, ?)
             ON CONFLICT (username) DO NOTHING
             """,
-            ("admin", _hash_password("admin123"), now),
+            ("admin", hash_password("Admin123!"), now),
         )
 
         # transport_events
@@ -234,7 +226,7 @@ def main() -> None:
         print("   - pd_executions: +15")
         print("   - oid_directory: +1")
         print("   - findings: +1")
-        print("   - users: admin/admin123 (created if missing)")
+        print("   - users: admin/Admin123! (created if missing)")
         print("   - transport_events: +5")
     finally:
         conn.close()

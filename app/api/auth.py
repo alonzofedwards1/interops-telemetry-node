@@ -50,12 +50,6 @@ async def login(payload: LoginRequest, response: Response):
 
     stored_hash = row["password_hash"]
 
-    logger.info("LOGIN_DEBUG", extra={
-        "username": payload.username,
-        "password_input": payload.password,
-        "hash": stored_hash
-    })
-
     try:
         if not verify_password(payload.password, stored_hash):
             logger.warning(
