@@ -47,11 +47,11 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS telemetry_sessions (
-    id BIGSERIAL PRIMARY KEY,
-    token_hash TEXT NOT NULL,
-    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    expires_at BIGINT NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id),
+    token_hash TEXT UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    expires_at TIMESTAMP NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON telemetry_sessions(token_hash);
