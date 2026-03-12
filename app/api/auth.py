@@ -9,7 +9,7 @@ from app.auth.models import LoginRequest, LoginResponse
 from app.auth.service import clear_session, issue_session
 from app.config.settings import get_settings
 from app.db.connection import get_connection
-from app.security.passwords import verify_password
+from app.security.passwords import hash_password, verify_legacy_sha256_password, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -41,11 +41,31 @@ async def login(payload: LoginRequest, response: Response):
             )
             raise HTTPException(status_code=401, detail="Invalid credentials")
     except (UnknownHashError, ValueError):
-        logger.warning(
-            "AUTH_LOGIN_FAILED_INVALID_HASH",
+        if not verify_legacy_sha256_password(
+            payload.password,
+            user["password_hash"],
+            settings.auth_password_salt,
+        ):
+            logger.warning(
+                "AUTH_LOGIN_FAILED_INVALID_HASH",
+                extra={"username": payload.username, "userId": user["id"]},
+            )
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE users SET password_hash = %s WHERE id = %s",
+                (hash_password(payload.password), user["id"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        logger.info(
+            "AUTH_LOGIN_LEGACY_HASH_UPGRADED",
             extra={"username": payload.username, "userId": user["id"]},
         )
-        raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = issue_session(user["id"])
 
