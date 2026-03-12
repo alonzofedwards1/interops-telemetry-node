@@ -24,7 +24,6 @@ from app.api.transport_routes import router as transport_router
 
 from app.config.settings import get_settings
 from app.db.migrations import run_migrations
-from app.scripts.seed_admin import seed_admin_user
 
 # ---------------------------------------------------------
 # Logging
