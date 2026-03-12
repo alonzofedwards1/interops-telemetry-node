@@ -2,6 +2,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
+from passlib.exc import UnknownHashError
 
 from app.auth.dependencies import require_auth
 from app.auth.models import LoginRequest, LoginResponse
@@ -32,9 +33,16 @@ async def login(payload: LoginRequest, response: Response):
         logger.warning("AUTH_LOGIN_FAILED_UNKNOWN_USER", extra={"username": payload.username})
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    if not verify_password(payload.password, user["password_hash"]):
+    try:
+        if not verify_password(payload.password, user["password_hash"]):
+            logger.warning(
+                "AUTH_LOGIN_FAILED_BAD_PASSWORD",
+                extra={"username": payload.username, "userId": user["id"]},
+            )
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+    except (UnknownHashError, ValueError):
         logger.warning(
-            "AUTH_LOGIN_FAILED_BAD_PASSWORD",
+            "AUTH_LOGIN_FAILED_INVALID_HASH",
             extra={"username": payload.username, "userId": user["id"]},
         )
         raise HTTPException(status_code=401, detail="Invalid credentials")
