@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 @router.post("/login", response_model=LoginResponse)
 async def login(payload: LoginRequest, response: Response):
+    logger.info("LOGIN_START")
     logger.info("AUTH_LOGIN_ATTEMPT", extra={"username": payload.username})
 
     try:
@@ -27,7 +28,10 @@ async def login(payload: LoginRequest, response: Response):
         )
         raise
 
-    logger.info("AUTH_LOGIN_SUCCESS", extra={"username": payload.username})
+    logger.info(
+        "AUTH_LOGIN_SUCCESS",
+        extra={"username": payload.username, "token_len": len(token)},
+    )
 
     response.set_cookie(
         key=settings.auth_cookie_name,
@@ -37,6 +41,10 @@ async def login(payload: LoginRequest, response: Response):
         samesite="none",
         max_age=settings.auth_session_ttl_seconds,
         path="/",
+    )
+    logger.info(
+        "AUTH_LOGIN_COOKIE_SET",
+        extra={"cookie_name": settings.auth_cookie_name, "token_len": len(token)},
     )
 
     return {"success": True}
