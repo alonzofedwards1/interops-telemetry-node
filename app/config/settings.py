@@ -3,9 +3,6 @@ from dataclasses import dataclass
 from typing import List
 
 DEFAULT_PORT = 8081
-DEFAULT_DATABASE_URL = (
-    "postgresql://interoplens:devpassword@localhost:5432/interoplens"
-)
 DEFAULT_ENVIRONMENT = "dev"
 DEFAULT_ALLOWED_ORIGINS = ["http://localhost:3000"]
 
@@ -24,22 +21,36 @@ class Settings:
 
 
 def get_settings() -> Settings:
+    # CORS Origins
     origins_value = os.environ.get("CORS_ORIGINS")
+
     if origins_value:
         origins = [o.strip() for o in origins_value.split(",") if o.strip()]
     else:
-        origins = DEFAULT_ALLOWED_ORIGINS
+        origins = list(DEFAULT_ALLOWED_ORIGINS)
 
-    if "http://localhost:3000" not in origins:
-        origins.append("http://localhost:3000")
+    # Only force localhost in dev
+    if os.environ.get("ENVIRONMENT", DEFAULT_ENVIRONMENT) == "dev":
+        if "http://localhost:3000" not in origins:
+            origins.append("http://localhost:3000")
+
+    # REQUIRED VARIABLES (fail fast)
+    database_url = os.environ["DATABASE_URL"]
+    auth_password_salt = os.environ["AUTH_PASSWORD_SALT"]
+
+    # OPTIONAL VARIABLES
+    auth_cookie_secure = os.environ.get("AUTH_COOKIE_SECURE", "false").lower() == "true"
 
     return Settings(
         port=int(os.environ.get("TELEMETRY_PORT", DEFAULT_PORT)),
-        database_url=os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL),
+        database_url=database_url,
         environment=os.environ.get("ENVIRONMENT", DEFAULT_ENVIRONMENT),
         allowed_origins=origins,
+
         auth_cookie_name=os.environ.get("AUTH_COOKIE_NAME", "telemetry_auth"),
-        auth_cookie_secure=False,
-        auth_session_ttl_seconds=int(os.environ.get("AUTH_SESSION_TTL_SECONDS", "43200")),
-        auth_password_salt=os.environ.get("AUTH_PASSWORD_SALT", "dev_salt_123"),
+        auth_cookie_secure=auth_cookie_secure,
+        auth_session_ttl_seconds=int(
+            os.environ.get("AUTH_SESSION_TTL_SECONDS", "43200")
+        ),
+        auth_password_salt=auth_password_salt,
     )

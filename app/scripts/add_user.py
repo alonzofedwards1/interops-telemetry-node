@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from app.db.connection import get_connection
-from app.security.passwords import hash_password
+from app.auth.security import hash_password
 
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "Admin123!"

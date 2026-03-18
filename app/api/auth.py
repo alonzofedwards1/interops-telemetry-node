@@ -1,15 +1,12 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
-from passlib.exc import UnknownHashError
 
 from app.auth.dependencies import require_auth
 from app.auth.models import LoginRequest, LoginResponse
-from app.auth.service import clear_session, issue_session
+from app.auth import service as auth_service
 from app.config.settings import get_settings
-from app.db.connection import get_connection
-from app.security.passwords import hash_password, verify_legacy_sha256_password, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -19,62 +16,25 @@ logger = logging.getLogger(__name__)
 
 @router.post("/login", response_model=LoginResponse)
 async def login(payload: LoginRequest, response: Response):
-    conn = get_connection()
+    logger.info("AUTH_LOGIN_ATTEMPT", extra={"username": payload.username})
 
     try:
-        user = conn.execute(
-            "SELECT id, password_hash FROM users WHERE username = %s",
-            (payload.username,),
-        ).fetchone()
-    finally:
-        conn.close()
-
-    if not user:
-        logger.warning("AUTH_LOGIN_FAILED_UNKNOWN_USER", extra={"username": payload.username})
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    try:
-        if not verify_password(payload.password, user["password_hash"]):
-            logger.warning(
-                "AUTH_LOGIN_FAILED_BAD_PASSWORD",
-                extra={"username": payload.username, "userId": user["id"]},
-            )
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-    except (UnknownHashError, ValueError):
-        if not verify_legacy_sha256_password(
-            payload.password,
-            user["password_hash"],
-            settings.auth_password_salt,
-        ):
-            logger.warning(
-                "AUTH_LOGIN_FAILED_INVALID_HASH",
-                extra={"username": payload.username, "userId": user["id"]},
-            )
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-
-        conn = get_connection()
-        try:
-            conn.execute(
-                "UPDATE users SET password_hash = %s WHERE id = %s",
-                (hash_password(payload.password), user["id"]),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-        logger.info(
-            "AUTH_LOGIN_LEGACY_HASH_UPGRADED",
-            extra={"username": payload.username, "userId": user["id"]},
+        token = auth_service.login(payload.username, payload.password)
+    except Exception:
+        logger.warning(
+            "AUTH_LOGIN_FAILED",
+            extra={"username": payload.username},
         )
+        raise
 
-    token = issue_session(user["id"])
+    logger.info("AUTH_LOGIN_SUCCESS", extra={"username": payload.username})
 
     response.set_cookie(
         key=settings.auth_cookie_name,
         value=token,
         httponly=True,
         secure=False,
-        samesite="lax",
+        samesite="none",
         max_age=settings.auth_session_ttl_seconds,
         path="/",
     )
@@ -86,8 +46,9 @@ async def login(payload: LoginRequest, response: Response):
 async def logout(request: Request, user_id: int = Depends(require_auth)):
     token = request.cookies.get(settings.auth_cookie_name)
 
-    if token:
-        clear_session(token)
+    logger.info("AUTH_LOGOUT", extra={"userId": user_id})
+
+    auth_service.logout(token)
 
     response = JSONResponse(status_code=204, content={})
     response.delete_cookie(
@@ -97,7 +58,7 @@ async def logout(request: Request, user_id: int = Depends(require_auth)):
 
     return response
 
-
 @router.get("/me")
 async def me(user_id: int = Depends(require_auth)):
+    logger.debug("AUTH_ME_REQUEST", extra={"userId": user_id})
     return {"userId": user_id}

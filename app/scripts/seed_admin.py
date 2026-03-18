@@ -1,5 +1,5 @@
 from app.db.connection import get_connection
-from app.security.passwords import hash_password
+from app.auth.security import hash_password
 
 username = "admin"
 password = "Admin123!"

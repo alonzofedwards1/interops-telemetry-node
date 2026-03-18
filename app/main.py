@@ -5,7 +5,8 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-
+from dotenv import load_dotenv
+load_dotenv()
 # Ensure project root is on sys.path
 ROOT_PATH = Path(__file__).resolve().parent.parent
 if str(ROOT_PATH) not in sys.path:
@@ -31,54 +32,54 @@ from app.db.migrations import run_migrations
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------
 # Settings
-# ---------------------------------------------------------
 settings = get_settings()
 
-# ---------------------------------------------------------
+
 # FastAPI App
-# ---------------------------------------------------------
 app = FastAPI(
     title="InterOps Telemetry API",
     version="0.1.0",
 )
 
-# ---------------------------------------------------------
 # CORS
-# ---------------------------------------------------------
+# Ensure React dev server works even if settings are empty
+# CORS
+allowed_origins = ["http://localhost:3000"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=True,
 )
 
-# ---------------------------------------------------------
+logger.info(f"CORS enabled for: {allowed_origins}")
+logger.info(f"CORS enabled for: {allowed_origins}")
+
 # Routers
-# ---------------------------------------------------------
 app.include_router(auth_router, prefix="/api")
+
 app.include_router(committee_queue_router, prefix="/api")
 app.include_router(telemetry_router, prefix="/api")
-app.include_router(transport_router)
-app.include_router(messages_router)
 app.include_router(pd_executions_router, prefix="/api")
 app.include_router(findings_router, prefix="/api")
 app.include_router(oids_router, prefix="/api")
 app.include_router(integration_health_router, prefix="/api")
 
-# ---------------------------------------------------------
+# Routers that define their own prefix internally
+app.include_router(messages_router)
+app.include_router(transport_router)
+
 # Startup
-# ---------------------------------------------------------
 @app.on_event("startup")
 async def startup() -> None:
     logger.info("Running DB migrations...")
     run_migrations()
 
-# ---------------------------------------------------------
 # Health Check
-# ---------------------------------------------------------
+
 @app.get("/health")
 async def health():
     return {
@@ -86,33 +87,9 @@ async def health():
         "database_url": settings.database_url,
         "port": settings.port,
         "environment": settings.environment,
-        "allowed_origins": settings.allowed_origins,
+        "allowed_origins": allowed_origins,
     }
 
-
-@app.api_route("/test", methods=["GET", "POST"])
-async def test_endpoint(request: Request):
-    if request.method == "GET":
-        return {"message": "test endpoint working"}
-
-    content_type = request.headers.get("content-type", "").lower()
-    if "application/json" not in content_type:
-        raise HTTPException(status_code=400, detail="Content-Type must be application/json")
-
-    body = await request.body()
-    if not body.strip():
-        raise HTTPException(status_code=400, detail="Request body cannot be empty")
-
-    try:
-        payload = await request.json()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
-
-    return {"received": payload}
-
-# ---------------------------------------------------------
-# Local Dev Entry
-# ---------------------------------------------------------
 if __name__ == "__main__":
     uvicorn.run(
         "app.main:app",

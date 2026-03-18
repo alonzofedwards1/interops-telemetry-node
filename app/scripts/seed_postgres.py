@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from app.db.connection import get_connection
-from app.security.passwords import hash_password
+from app.auth.security import hash_password
 
 
 def _utc_now() -> str:
