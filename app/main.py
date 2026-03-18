@@ -42,6 +42,22 @@ app = FastAPI(
     version="0.1.0",
 )
 
+
+@app.middleware("http")
+async def debug_middleware(request: Request, call_next):
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as e:
+        logger.exception(
+            "UNHANDLED_EXCEPTION",
+            extra={
+                "path": request.url.path,
+                "method": request.method,
+            },
+        )
+        raise e
+
 # CORS
 # Ensure React dev server works even if settings are empty
 # CORS
