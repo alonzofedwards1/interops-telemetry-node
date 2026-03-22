@@ -24,12 +24,12 @@ def _utc_now() -> str:
 
 
 # ============================================================
-# LIST FINDINGS (WITH ORGANIZATION RESOLUTION)
+# LIST FINDINGS
 # ============================================================
 
 def list_findings(
     *,
-    limit: Optional[int] = None,   # 🔥 IMPORTANT
+    limit: Optional[int] = None,
     offset: int = 0,
     severity: str | None = None,
     status: str | None = None,
@@ -40,6 +40,7 @@ def list_findings(
     sort: str = "created_at",
     order: str = "desc",
 ) -> list[dict[str, Any]]:
+
     sort = f"f.{sort}" if sort in _ALLOWED_SORT_FIELDS else "f.created_at"
     order = order if order in _ALLOWED_ORDER else "desc"
 
@@ -49,18 +50,23 @@ def list_findings(
     if severity:
         where_clauses.append("f.severity = ?")
         params.append(severity)
+
     if status:
         where_clauses.append("f.status = ?")
         params.append(status)
+
     if category:
         where_clauses.append("f.category = ?")
         params.append(category)
+
     if execution_type:
         where_clauses.append("f.execution_type = ?")
         params.append(execution_type)
+
     if execution_id:
         where_clauses.append("f.execution_id = ?")
         params.append(execution_id)
+
     if q:
         where_clauses.append("(f.summary LIKE ? OR f.technical_detail LIKE ?)")
         like = f"%{q}%"
@@ -83,21 +89,17 @@ def list_findings(
             f.last_seen_at,
             f.created_at,
             f.updated_at,
-
             e.source_oid AS source_oid,
             od.organization_name AS organization_name
-
         FROM findings f
-        JOIN pd_executions e
-            ON f.execution_id = e.request_id
+        LEFT JOIN pd_executions e
+            ON LOWER(TRIM(f.execution_id)) = LOWER(TRIM(e.request_id))
         LEFT JOIN oid_directory od
-            ON e.source_oid = od.oid
-
+            ON LOWER(TRIM(e.source_oid)) = LOWER(TRIM(od.oid))
         {where_sql}
         ORDER BY {sort} {order}
     """
 
-    # 🔥 CRITICAL FIX: only apply LIMIT if provided
     if limit is not None:
         query += " LIMIT ? OFFSET ?"
         params.extend([limit, offset])
@@ -106,15 +108,12 @@ def list_findings(
     try:
         rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
-    except Exception:
-        logger.exception("Failed list_findings query")
-        raise
     finally:
         conn.close()
 
 
 # ============================================================
-# GET FINDING BY ID
+# GET FINDING
 # ============================================================
 
 def get_finding_by_id(finding_id: str) -> dict[str, Any] | None:
@@ -133,15 +132,13 @@ def get_finding_by_id(finding_id: str) -> dict[str, Any] | None:
             f.last_seen_at,
             f.created_at,
             f.updated_at,
-
             e.source_oid AS source_oid,
             od.organization_name AS organization_name
-
         FROM findings f
-        JOIN pd_executions e
-            ON f.execution_id = e.request_id
+        LEFT JOIN pd_executions e
+            ON LOWER(TRIM(f.execution_id)) = LOWER(TRIM(e.request_id))
         LEFT JOIN oid_directory od
-            ON e.source_oid = od.oid
+            ON LOWER(TRIM(e.source_oid)) = LOWER(TRIM(od.oid))
         WHERE f.id = ?
     """
 
@@ -149,92 +146,12 @@ def get_finding_by_id(finding_id: str) -> dict[str, Any] | None:
     try:
         row = conn.execute(query, (finding_id,)).fetchone()
         return dict(row) if row else None
-    except Exception:
-        logger.exception("Failed get_finding_by_id query")
-        raise
     finally:
         conn.close()
 
 
 # ============================================================
-# FINDING ID RESOLUTION
-# ============================================================
-
-def find_finding_ids_by_signature(
-    *,
-    execution_id: str | None,
-    execution_type: str,
-    severity: str,
-    category: str,
-    summary: str,
-) -> list[str]:
-    if execution_id is None:
-        return []
-
-    query = """
-        SELECT id
-        FROM findings
-        WHERE execution_id = ?
-          AND execution_type = ?
-          AND severity = ?
-          AND category = ?
-          AND summary = ?
-        ORDER BY created_at ASC
-    """
-
-    conn = get_connection()
-    try:
-        rows = conn.execute(
-            query,
-            (execution_id, execution_type, severity, category, summary),
-        ).fetchall()
-        return [row["id"] for row in rows]
-    except Exception:
-        logger.exception("Failed find_finding_ids_by_signature query")
-        raise
-    finally:
-        conn.close()
-
-
-def replace_finding_id(*, current_id: str, new_id: str) -> None:
-    conn = get_connection()
-    try:
-        conn.execute(
-            """
-            UPDATE findings
-            SET id = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (new_id, _utc_now(), current_id),
-        )
-        conn.commit()
-    except Exception:
-        logger.exception("Failed replace_finding_id query")
-        raise
-    finally:
-        conn.close()
-
-
-def delete_finding_by_id(finding_id: str) -> None:
-    conn = get_connection()
-    try:
-        conn.execute(
-            """
-            DELETE FROM findings
-            WHERE id = ?
-            """,
-            (finding_id,),
-        )
-        conn.commit()
-    except Exception:
-        logger.exception("Failed delete_finding_by_id query")
-        raise
-    finally:
-        conn.close()
-
-
-# ============================================================
-# COUNTS (AUTHORITATIVE INVENTORY)
+# COUNTS
 # ============================================================
 
 def get_findings_counts(
@@ -243,15 +160,18 @@ def get_findings_counts(
     status: str | None = None,
     execution_type: str | None = None,
 ) -> dict[str, int]:
+
     where_clauses = []
     params: list[Any] = []
 
     if severity:
         where_clauses.append("severity = ?")
         params.append(severity)
+
     if status:
         where_clauses.append("status = ?")
         params.append(status)
+
     if execution_type:
         where_clauses.append("execution_type = ?")
         params.append(execution_type)
@@ -275,15 +195,12 @@ def get_findings_counts(
     try:
         row = conn.execute(query, params).fetchone()
         return {k: int(row[k] or 0) for k in row.keys()} if row else {}
-    except Exception:
-        logger.exception("Failed get_findings_counts query")
-        raise
     finally:
         conn.close()
 
 
 # ============================================================
-# WRITE OPERATIONS
+# UPSERT
 # ============================================================
 
 def add_or_update_finding(
@@ -298,6 +215,7 @@ def add_or_update_finding(
     recommended_action: str | None,
     status: str = "open",
 ) -> None:
+
     now = _utc_now()
 
     conn = get_connection()
@@ -305,18 +223,9 @@ def add_or_update_finding(
         conn.execute(
             """
             INSERT INTO findings (
-                id,
-                execution_id,
-                execution_type,
-                severity,
-                category,
-                summary,
-                technical_detail,
-                recommended_action,
-                status,
-                first_seen_at,
-                last_seen_at,
-                updated_at
+                id, execution_id, execution_type, severity, category,
+                summary, technical_detail, recommended_action,
+                status, first_seen_at, last_seen_at, updated_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
@@ -332,29 +241,21 @@ def add_or_update_finding(
                 updated_at = excluded.updated_at
             """,
             (
-                id,
-                execution_id,
-                execution_type,
-                severity,
-                category,
-                summary,
-                technical_detail,
-                recommended_action,
-                status,
-                now,
-                now,
-                now,
+                id, execution_id, execution_type, severity, category,
+                summary, technical_detail, recommended_action,
+                status, now, now, now
             ),
         )
         conn.commit()
-    except Exception:
-        logger.exception("Failed add_or_update_finding query")
-        raise
     finally:
         conn.close()
 
 
-def update_finding_status(*, finding_id: str, status: str) -> dict[str, Any] | None:
+# ============================================================
+# UPDATE STATUS
+# ============================================================
+
+def update_finding_status(*, finding_id: str, status: str):
     now = _utc_now()
 
     conn = get_connection()
@@ -368,9 +269,84 @@ def update_finding_status(*, finding_id: str, status: str) -> dict[str, Any] | N
             (status, now, finding_id),
         )
         conn.commit()
-        return get_finding_by_id(finding_id)
-    except Exception:
-        logger.exception("Failed update_finding_status query")
-        raise
+
+        row = conn.execute(
+            "SELECT * FROM findings WHERE id = ?",
+            (finding_id,),
+        ).fetchone()
+
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+# ============================================================
+# DELETE / DEDUP SUPPORT
+# ============================================================
+
+def delete_finding_by_id(finding_id: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM findings WHERE id = ?",
+            (finding_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_findings_by_execution(execution_id: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM findings WHERE execution_id = ?",
+            (execution_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def find_finding_ids_by_signature(
+    *,
+    execution_id: str,
+    execution_type: str,
+    severity: str,
+    category: str,
+    summary: str,
+) -> list[str]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT id
+            FROM findings
+            WHERE execution_id = ?
+              AND execution_type = ?
+              AND severity = ?
+              AND category = ?
+              AND summary = ?
+            """,
+            (execution_id, execution_type, severity, category, summary),
+        ).fetchall()
+        return [row["id"] for row in rows]
+    finally:
+        conn.close()
+
+
+def replace_finding_id(*, current_id: str, new_id: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM findings WHERE id = ?", (new_id,))
+        conn.execute(
+            """
+            UPDATE findings
+            SET id = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (new_id, _utc_now(), current_id),
+        )
+        conn.commit()
     finally:
         conn.close()

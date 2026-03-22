@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 @router.post("/login", response_model=LoginResponse)
 async def login(payload: LoginRequest, response: Response):
-    logger.info("LOGIN_START")
     logger.info("AUTH_LOGIN_ATTEMPT", extra={"username": payload.username})
 
     try:
@@ -28,23 +27,16 @@ async def login(payload: LoginRequest, response: Response):
         )
         raise
 
-    logger.info(
-        "AUTH_LOGIN_SUCCESS",
-        extra={"username": payload.username, "token_len": len(token)},
-    )
+    logger.info("AUTH_LOGIN_SUCCESS", extra={"username": payload.username})
 
     response.set_cookie(
         key=settings.auth_cookie_name,
         value=token,
         httponly=True,
         secure=False,
-        samesite="none",
+        samesite="lax",
         max_age=settings.auth_session_ttl_seconds,
         path="/",
-    )
-    logger.info(
-        "AUTH_LOGIN_COOKIE_SET",
-        extra={"cookie_name": settings.auth_cookie_name, "token_len": len(token)},
     )
 
     return {"success": True}
@@ -67,6 +59,9 @@ async def logout(request: Request, user_id: int = Depends(require_auth)):
     return response
 
 @router.get("/me")
-async def me(user_id: int = Depends(require_auth)):
-    logger.debug("AUTH_ME_REQUEST", extra={"userId": user_id})
-    return {"userId": user_id}
+async def me(user=Depends(require_auth)):
+    return {
+        "id": str(user["id"]),
+        "email": user["email"],
+        "role": user["role"],
+    }

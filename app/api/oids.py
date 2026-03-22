@@ -15,6 +15,10 @@ router = APIRouter(prefix="/oids", tags=["oids"])
 logger = logging.getLogger(__name__)
 
 
+# ============================================================
+# HELPERS
+# ============================================================
+
 def _confidence_label(score: float | None) -> str:
     if score is None:
         return "LOW"
@@ -25,6 +29,17 @@ def _confidence_label(score: float | None) -> str:
     return "LOW"
 
 
+def _format_dt(value):
+    """Convert datetime → ISO string"""
+    if not value:
+        return None
+    return value.isoformat()
+
+
+# ============================================================
+# LIST OIDS
+# ============================================================
+
 @router.get("", response_model=List[OidListItem])
 async def get_oids(
     status: str | None = None,
@@ -33,17 +48,21 @@ async def get_oids(
     order: str = "desc",
 ):
     try:
+        sort = sort.lower()
+
         sort_map = {
             "last_seen": "last_seen_at",
             "oid": "oid",
             "status": "status",
         }
+
         rows = list_oids(
             status=status,
-            confidence=confidence,
+            confidence=confidence if confidence and confidence.lower() != "all" else None,
             sort=sort_map.get(sort, "last_seen_at"),
             order=order,
         )
+
         return [
             OidListItem(
                 oid=row["oid"],
@@ -51,15 +70,20 @@ async def get_oids(
                 ownerOrg=row.get("organization_name"),
                 status=row["status"],
                 confidence=_confidence_label(row.get("confidence_score")),
-                firstSeen=row.get("first_seen_at"),
-                lastSeen=row.get("last_seen_at"),
+                firstSeen=_format_dt(row.get("first_seen_at")),
+                lastSeen=_format_dt(row.get("last_seen_at")),
             )
             for row in rows
         ]
+
     except Exception:
         logger.exception("Failed to list OIDs")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+
+# ============================================================
+# GET OID DETAIL
+# ============================================================
 
 @router.get("/{oid}", response_model=OidDetail)
 async def get_oid_detail(oid: str):
@@ -67,23 +91,30 @@ async def get_oid_detail(oid: str):
         row = get_oid(oid)
         if not row:
             raise HTTPException(status_code=404, detail="OID not found")
+
         usage = get_oid_usage_counts(oid)
+
         return OidDetail(
             oid=row["oid"],
             displayName=row.get("organization_name"),
             ownerOrg=row.get("organization_name"),
             status=row["status"],
             confidence=_confidence_label(row.get("confidence_score")),
-            firstSeen=row.get("first_seen_at"),
-            lastSeen=row.get("last_seen_at"),
+            firstSeen=_format_dt(row.get("first_seen_at")),
+            lastSeen=_format_dt(row.get("last_seen_at")),
             usage=OidUsage(**usage),
         )
+
     except HTTPException:
         raise
     except Exception:
         logger.exception("Failed to get OID detail")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+
+# ============================================================
+# GOVERN OID
+# ============================================================
 
 @router.post("/{oid}/governance", response_model=OidDetail)
 async def govern_oid(
@@ -111,20 +142,23 @@ async def govern_oid(
             owner_org=payload.ownerOrg,
             reviewed_by=x_reviewer,
         )
+
         if not updated:
             raise HTTPException(status_code=404, detail="OID not found")
 
         usage = get_oid_usage_counts(oid)
+
         return OidDetail(
             oid=updated["oid"],
             displayName=updated.get("organization_name"),
             ownerOrg=updated.get("organization_name"),
             status=updated["status"],
             confidence=_confidence_label(updated.get("confidence_score")),
-            firstSeen=updated.get("first_seen_at"),
-            lastSeen=updated.get("last_seen_at"),
+            firstSeen=_format_dt(updated.get("first_seen_at")),
+            lastSeen=_format_dt(updated.get("last_seen_at")),
             usage=OidUsage(**usage),
         )
+
     except HTTPException:
         raise
     except ValueError as exc:
