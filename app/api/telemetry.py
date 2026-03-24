@@ -14,10 +14,6 @@ from app.pd.materialization_trigger import materialize_pd_execution
 router = APIRouter(prefix="/telemetry", tags=["telemetry"])
 logger = logging.getLogger(__name__)
 
-
-# -------------------------------------------------------
-# AUTHENTICATED TELEMETRY INGEST (Internal App Telemetry)
-# -------------------------------------------------------
 @router.post("/events")
 async def ingest_event(payload: dict = Body(...), user_id: int = Depends(require_auth)):
     try:

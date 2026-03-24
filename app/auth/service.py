@@ -3,6 +3,7 @@ import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 
+import pyotp
 from passlib.exc import UnknownHashError
 
 from app.auth import repository
@@ -17,10 +18,8 @@ from app.db.connection import get_connection
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
-
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
-
 
 def issue_session(user_id: int) -> str:
     token = secrets.token_urlsafe(32)
@@ -129,7 +128,12 @@ def clear_session(token: str) -> None:
     logger.debug("SESSION_CLEARED")
 
 
-def login(username: str, password: str) -> str:
+def verify_totp_code(secret: str, code: str) -> bool:
+    totp = pyotp.TOTP(secret)
+    return totp.verify(code)
+
+
+def login(username: str, password: str):
     user = repository.get_user_by_username(username)
 
     if not user:
@@ -169,11 +173,44 @@ def login(username: str, password: str) -> str:
             extra={"username": username, "userId": user["id"]},
         )
 
+    if user.get("mfa_enabled"):
+        logger.info(
+            "AUTH_MFA_REQUIRED",
+            extra={"userId": user["id"]},
+        )
+
+        return {
+            "mfa_required": True,
+            "user_id": user["id"],
+        }
+
     token = issue_session(user["id"])
 
     logger.info(
         "AUTH_LOGIN_SUCCESS",
         extra={"username": username, "userId": user["id"]},
+    )
+
+    return {"token": token}
+
+def complete_mfa(user_id: int, code: str) -> str:
+    user = repository.get_user_by_id(user_id)
+
+    if not user or not user.get("totp_secret"):
+        raise Exception("MFA not configured")
+
+    if not verify_totp_code(user["totp_secret"], code):
+        logger.warning(
+            "AUTH_MFA_FAILED",
+            extra={"userId": user_id},
+        )
+        raise Exception("Invalid MFA code")
+
+    token = issue_session(user_id)
+
+    logger.info(
+        "AUTH_MFA_SUCCESS",
+        extra={"userId": user_id},
     )
 
     return token
