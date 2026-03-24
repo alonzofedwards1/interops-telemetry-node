@@ -1,23 +1,20 @@
 import logging
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
-from app.auth.dependencies import require_auth
-from app.auth.models import LoginRequest, LoginResponse
-from app.auth import service as auth_service
 from app.auth import repository
+from app.auth import service as auth_service
+from app.auth.models import LoginRequest
+from app.auth.totp import verify_totp
 from app.config.settings import get_settings
 from app.core.rate_limiter import limiter
-from app.auth.totp import verify_totp
-
-# 🔒 TEMP: disable lock system for debugging
-# from app.services.login_attempt_service import (
-#     is_locked,
-#     record_failure,
-#     reset_attempts,
-#     get_remaining_lock_time,
-# )
+from app.services.login_attempt_service import (
+    get_remaining_lock_time,
+    is_locked,
+    record_failure,
+    reset_attempts,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -25,47 +22,46 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------
-# LOGIN
-# ---------------------------------------------------------
-@router.post("/login", response_model=LoginResponse)
+def _is_secure_cookie() -> bool:
+    return settings.environment.lower() in {"prod", "production"}
+
+
+def _set_auth_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=settings.auth_cookie_name,
+        value=token,
+        httponly=True,
+        secure=_is_secure_cookie(),
+        samesite="lax",
+        max_age=settings.auth_session_ttl_seconds,
+        path="/",
+    )
+
+
+@router.post("/login")
 @limiter.limit("5/minute")
 async def login(request: Request, payload: LoginRequest, response: Response):
     username = payload.username
-    password = payload.password
 
     logger.info("AUTH_LOGIN_ATTEMPT", extra={"username": username})
 
-    # 🔍 DEBUG INPUT (REMOVE LATER)
-    logger.info(
-        "LOGIN_DEBUG",
-        extra={
-            "username": username,
-            "password": password,
-            "password_length": len(password) if password else None,
-        },
-    )
-
-    # 🔒 LOCK CHECK (DISABLED FOR NOW)
-    # if is_locked(username):
-    #     remaining = get_remaining_lock_time(username)
-    #     return JSONResponse(
-    #         status_code=423,
-    #         content={
-    #             "error": {
-    #                 "code": "ACCOUNT_LOCKED",
-    #                 "message": f"Account locked. Try again in {remaining} seconds.",
-    #             }
-    #         },
-    #     )
+    if is_locked(username):
+        remaining = get_remaining_lock_time(username)
+        return JSONResponse(
+            status_code=423,
+            content={
+                "error": {
+                    "code": "ACCOUNT_LOCKED",
+                    "message": f"Try again in {remaining} seconds",
+                }
+            },
+        )
 
     try:
-        user = auth_service.verify_credentials(username, password)
-
+        user = auth_service.verify_credentials(username, payload.password)
     except Exception:
+        record_failure(username)
         logger.warning("AUTH_LOGIN_FAILED", extra={"username": username})
-
-        # 🔴 CRITICAL: ALWAYS RETURN ON FAILURE
         return JSONResponse(
             status_code=401,
             content={
@@ -76,38 +72,25 @@ async def login(request: Request, payload: LoginRequest, response: Response):
             },
         )
 
-    # ✅ SUCCESS
-    logger.info(
-        "AUTH_LOGIN_SUCCESS",
-        extra={"username": username, "userId": user["id"]},
-    )
+    reset_attempts(username)
 
-    # 🔐 MFA REQUIRED
     if user.get("totp_secret"):
         return {
             "mfaRequired": True,
             "username": username,
         }
 
-    # 🔐 CREATE SESSION
     token = auth_service.create_session(user["id"])
+    _set_auth_cookie(response, token)
 
-    response.set_cookie(
-        key=settings.auth_cookie_name,
-        value=token,
-        httponly=True,
-        secure=False,  # ⚠️ set True in production
-        samesite="lax",
-        max_age=settings.auth_session_ttl_seconds,
-        path="/",
+    logger.info(
+        "AUTH_LOGIN_SUCCESS",
+        extra={"username": username, "userId": user["id"]},
     )
 
     return {"success": True}
 
 
-# ---------------------------------------------------------
-# MFA VERIFY
-# ---------------------------------------------------------
 @router.post("/mfa")
 async def verify_mfa(payload: dict, response: Response):
     username = payload.get("username")
@@ -139,7 +122,6 @@ async def verify_mfa(payload: dict, response: Response):
 
     if not verify_totp(user["totp_secret"], code):
         logger.warning("AUTH_MFA_FAILED", extra={"username": username})
-
         return JSONResponse(
             status_code=401,
             content={
@@ -150,54 +132,46 @@ async def verify_mfa(payload: dict, response: Response):
             },
         )
 
-    # ✅ MFA SUCCESS → CREATE SESSION
     token = auth_service.create_session(user["id"])
+    _set_auth_cookie(response, token)
 
-    response.set_cookie(
-        key=settings.auth_cookie_name,
-        value=token,
-        httponly=True,
-        secure=False,
-        samesite="lax",
-        max_age=settings.auth_session_ttl_seconds,
-        path="/",
-    )
-
-    logger.info(
-        "AUTH_MFA_SUCCESS",
-        extra={"username": username, "userId": user["id"]},
-    )
+    logger.info("AUTH_MFA_SUCCESS", extra={"username": username, "userId": user["id"]})
 
     return {"success": True}
 
 
-# ---------------------------------------------------------
-# LOGOUT
-# ---------------------------------------------------------
 @router.post("/logout")
-async def logout(request: Request, user_id: int = Depends(require_auth)):
+async def logout(request: Request):
     token = request.cookies.get(settings.auth_cookie_name)
 
-    logger.info("AUTH_LOGOUT", extra={"userId": user_id})
-
-    auth_service.logout(token)
+    auth_service.clear_session(token)
 
     response = JSONResponse(status_code=204, content={})
     response.delete_cookie(
         key=settings.auth_cookie_name,
         path="/",
+        httponly=True,
+        samesite="lax",
+        secure=_is_secure_cookie(),
     )
 
     return response
 
 
-# ---------------------------------------------------------
-# CURRENT USER
-# ---------------------------------------------------------
 @router.get("/me")
-async def me(user=Depends(require_auth)):
+async def me(request: Request):
+    token = request.cookies.get(settings.auth_cookie_name)
+    user_id = auth_service.validate_session(token)
+
+    if not user_id:
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+
+    user = repository.get_user_by_id(user_id)
+    if not user:
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+
     return {
         "id": str(user["id"]),
-        "email": user["email"],
-        "role": user["role"],
+        "email": user.get("email", ""),
+        "role": user.get("role", ""),
     }

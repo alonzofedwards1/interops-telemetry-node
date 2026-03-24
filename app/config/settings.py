@@ -47,7 +47,7 @@ def get_settings() -> Settings:
         environment=os.environ.get("ENVIRONMENT", DEFAULT_ENVIRONMENT),
         allowed_origins=origins,
 
-        auth_cookie_name=os.environ.get("AUTH_COOKIE_NAME", "telemetry_auth"),
+        auth_cookie_name=os.environ.get("AUTH_COOKIE_NAME", "interoplens_session_id"),
         auth_cookie_secure=auth_cookie_secure,
         auth_session_ttl_seconds=int(
             os.environ.get("AUTH_SESSION_TTL_SECONDS", "43200")
