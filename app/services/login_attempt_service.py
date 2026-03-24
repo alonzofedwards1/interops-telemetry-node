@@ -1,40 +1,59 @@
+import threading
 import time
 from collections import defaultdict
 
 MAX_ATTEMPTS = 5
-LOCKOUT_SECONDS = 900  # 15 minutes
+LOCKOUT_SECONDS = 15 * 60
 
-attempts = defaultdict(int)
-lockouts = {}
+_attempts = defaultdict(int)
+_lockouts = {}
+_lock = threading.Lock()
+
+
+def _normalize(username: str) -> str:
+    return (username or "").strip().lower()
 
 
 def is_locked(username: str) -> bool:
-    locked_until = lockouts.get(username)
-    if not locked_until:
-        return False
+    key = _normalize(username)
+    now = time.time()
 
-    if time.time() > locked_until:
-        lockouts.pop(username, None)
-        attempts[username] = 0
-        return False
+    with _lock:
+        locked_until = _lockouts.get(key)
+        if not locked_until:
+            return False
 
-    return True
+        if now >= locked_until:
+            _lockouts.pop(key, None)
+            _attempts.pop(key, None)
+            return False
+
+        return True
 
 
 def record_failure(username: str):
-    attempts[username] += 1
+    key = _normalize(username)
 
-    if attempts[username] >= MAX_ATTEMPTS:
-        lockouts[username] = time.time() + LOCKOUT_SECONDS
+    with _lock:
+        _attempts[key] += 1
+        if _attempts[key] >= MAX_ATTEMPTS:
+            _lockouts[key] = time.time() + LOCKOUT_SECONDS
 
 
 def reset_attempts(username: str):
-    attempts.pop(username, None)
-    lockouts.pop(username, None)
+    key = _normalize(username)
+
+    with _lock:
+        _attempts.pop(key, None)
+        _lockouts.pop(key, None)
 
 
 def get_remaining_lock_time(username: str) -> int:
-    locked_until = lockouts.get(username)
-    if not locked_until:
-        return 0
-    return max(0, int(locked_until - time.time()))
+    key = _normalize(username)
+    now = time.time()
+
+    with _lock:
+        locked_until = _lockouts.get(key)
+        if not locked_until:
+            return 0
+        return max(0, int(locked_until - now))
